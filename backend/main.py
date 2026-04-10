@@ -12,7 +12,9 @@ from datetime import datetime
 
 # Import DB
 import models
-from models import get_db, init_db, Lead, AutomatonTask, InteractionLog, CustomerList, LeadListAssociation
+from models import get_db, init_db, Lead, AutomatonTask, InteractionLog, CustomerList, LeadListAssociation, MessageTemplate, BroadcastJob
+from fastapi import BackgroundTasks
+import asyncio
 
 load_dotenv()
 init_db()
@@ -242,6 +244,138 @@ async def get_lead_lists(lead_id: int, db: Session = Depends(get_db)):
 async def get_list_leads(list_id: int, db: Session = Depends(get_db)):
     """Get all leads in a specific list."""
     return db.query(Lead).join(LeadListAssociation).filter(LeadListAssociation.list_id == list_id).all()
+
+# --- LINE Broadcast System (Scenario 5 Extension) ---
+
+class TemplateUpdate(BaseModel):
+    name: Optional[str]
+    content: str
+    msg_type: str # text, flex
+
+@app.get("/broadcast/templates")
+async def get_templates(db: Session = Depends(get_db)):
+    """Fetch all 9 message slots."""
+    templates = db.query(MessageTemplate).order_by(MessageTemplate.slot_number).all()
+    # Ensure all 9 slots exist in response for UI
+    result = {i: None for i in range(1, 10)}
+    for t in templates:
+        result[t.slot_number] = t
+    return result
+
+@app.post("/broadcast/templates/{slot}")
+async def save_template(slot: int, tu: TemplateUpdate, db: Session = Depends(get_db)):
+    """Save or update a message template in a specific slot (1-9)."""
+    if slot < 1 or slot > 9:
+        raise HTTPException(status_code=400, detail="Slot must be 1-9")
+    
+    template = db.query(MessageTemplate).filter(MessageTemplate.slot_number == slot).first()
+    if not template:
+        template = MessageTemplate(slot_number=slot)
+        db.add(template)
+    
+    template.name = tu.name or f"Template {slot}"
+    template.content = tu.content
+    template.msg_type = tu.msg_type
+    db.commit()
+    db.refresh(template)
+    return template
+
+class BroadcastRequest(BaseModel):
+    list_id: int
+    template_id: int
+    scheduled_at: Optional[str] = None # ISO Format
+
+@app.post("/broadcast/send")
+async def broadcast_message(br: BroadcastRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """Trigger or schedule a broadcast to a list."""
+    template = db.query(MessageTemplate).filter(MessageTemplate.id == br.template_id).first()
+    if not template:
+        raise HTTPException(status_code=404, detail="Template not found")
+    
+    leads = db.query(Lead).join(LeadListAssociation).filter(LeadListAssociation.list_id == br.list_id).all()
+    if not leads:
+        raise HTTPException(status_code=400, detail="List is empty")
+
+    if br.scheduled_at:
+        try:
+            sched_time = datetime.fromisoformat(br.scheduled_at.replace('Z', '+00:00'))
+            new_job = BroadcastJob(
+                list_id=br.list_id,
+                template_id=br.template_id,
+                scheduled_at=sched_time,
+                status="pending"
+            )
+            db.add(new_job)
+            db.commit()
+            return {"status": "scheduled", "job_id": new_job.id}
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid date format: {e}")
+    else:
+        # Immediate send via Background Task
+        background_tasks.add_task(process_broadcast, br.list_id, template.content, template.msg_type)
+        return {"status": "sending_started"}
+
+async def process_broadcast(list_id: int, content: str, msg_type: str):
+    """Worker function to send messages to n8n one by one."""
+    # We need a new session for background tasks
+    db = models.SessionLocal()
+    try:
+        leads = db.query(Lead).join(LeadListAssociation).filter(LeadListAssociation.list_id == list_id).all()
+        logger.info(f"🚀 Starting broadcast to list {list_id} ({len(leads)} leads)")
+        
+        for lead in leads:
+            try:
+                # Payload for n8n SENDER
+                payload = {
+                    "uid": lead.line_uid,
+                    "message": content,
+                    "type": msg_type
+                }
+                # Trigger internal sender workflow (Assuming 'SENDER' is a workflow ID or we use a specific webhook)
+                # In this project, we might have a specific n8n workflow for this. 
+                # Let's target a generic 'broadcast' trigger if available, or just use n8n.trigger_workflow
+                await n8n.trigger_workflow("SENDER", payload) 
+                
+                await log_event("BROADCAST_SENT", {"uid": lead.line_uid, "type": msg_type}, db)
+            except Exception as e:
+                logger.error(f"Failed to send to {lead.line_uid}: {e}")
+        
+    finally:
+        db.close()
+
+# Scheduler Loop: Checks for pending jobs every 60 seconds
+async def start_scheduler():
+    while True:
+        db = models.SessionLocal()
+        try:
+            now = datetime.utcnow()
+            pending_jobs = db.query(BroadcastJob).filter(
+                BroadcastJob.status == "pending",
+                BroadcastJob.scheduled_at <= now
+            ).all()
+            
+            for job in pending_jobs:
+                job.status = "sending"
+                db.commit()
+                
+                # Fetch template content
+                template = db.query(MessageTemplate).filter(MessageTemplate.id == job.template_id).first()
+                if template:
+                    await process_broadcast(job.list_id, template.content, template.msg_type)
+                    job.status = "completed"
+                else:
+                    job.status = "failed"
+                db.commit()
+        except Exception as e:
+            logger.error(f"Scheduler error: {e}")
+        finally:
+            db.close()
+            await asyncio.sleep(60)
+
+@app.on_event("startup")
+async def startup_event():
+    # Start the scheduler in the background
+    asyncio.create_task(start_scheduler())
 
 # --- Automation Trigger (Scenario 4) ---
 

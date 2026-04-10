@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
-  Zap, 
   Activity, 
   Terminal, 
   Settings, 
@@ -17,7 +16,11 @@ import {
   Clock,
   Search,
   ExternalLink,
-  Cpu
+  Cpu,
+  Send,
+  Download,
+  Upload,
+  Zap
 } from 'lucide-react';
 import axios from 'axios';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -43,6 +46,16 @@ function App() {
   const [currentLeadLists, setCurrentLeadLists] = useState([]);
   const [newListName, setNewListName] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
+  
+  // -- Broadcast State --
+  const [broadcastTemplates, setBroadcastTemplates] = useState({});
+  const [currentSlot, setCurrentSlot] = useState(1);
+  const [editorName, setEditorName] = useState('');
+  const [editorContent, setEditorContent] = useState('');
+  const [editorType, setEditorType] = useState('text');
+  const [targetListId, setTargetListId] = useState('');
+  const [scheduledTime, setScheduledTime] = useState('');
+  const [notification, setNotification] = useState(null);
   
   const logEndRef = useRef(null);
 
@@ -164,6 +177,97 @@ function App() {
     }
   };
 
+  // -- Broadcast Functions --
+  const fetchTemplates = async () => {
+    try {
+      const res = await axios.get(`${API_BASE}/broadcast/templates`);
+      setBroadcastTemplates(res.data);
+    } catch (err) {
+      console.error("Error fetching templates", err);
+    }
+  };
+
+  const saveCurrentTemplate = async () => {
+    try {
+      const res = await axios.post(`${API_BASE}/broadcast/templates/${currentSlot}`, {
+        name: editorName,
+        content: editorContent,
+        msg_type: editorType
+      });
+      setBroadcastTemplates(prev => ({...prev, [currentSlot]: res.data}));
+      showNotification("範本已儲存", "success");
+    } catch (err) {
+      showNotification("儲存失敗", "error");
+    }
+  };
+
+  const showNotification = (msg, type) => {
+    setNotification({ msg, type });
+    setTimeout(() => setNotification(null), 3000);
+  };
+
+  const handleBroadcast = async (isScheduled = false) => {
+    if (!targetListId) return showNotification("請選擇投放名單", "error");
+    try {
+      const payload = {
+        list_id: parseInt(targetListId),
+        template_id: broadcastTemplates[currentSlot]?.id,
+        scheduled_at: isScheduled ? scheduledTime : null
+      };
+      if (!payload.template_id) return showNotification("請先儲存目前分頁內容", "error");
+      
+      await axios.post(`${API_BASE}/broadcast/send`, payload);
+      showNotification(isScheduled ? "已成功預約發送" : "發送程序已啟動", "success");
+    } catch (err) {
+      showNotification("執行失敗", "error");
+    }
+  };
+
+  const exportTemplate = () => {
+    const data = JSON.stringify({ name: editorName, content: editorContent, type: editorType }, null, 2);
+    const blob = new Blob([data], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `n8n_template_slot${currentSlot}.json`;
+    a.click();
+  };
+
+  const importTemplate = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const json = JSON.parse(ev.target.result);
+        setEditorName(json.name || '');
+        setEditorContent(json.content || '');
+        setEditorType(json.type || 'text');
+        showNotification("範本已載入，點擊儲存以生效", "success");
+      } catch (err) {
+        showNotification("檔案格式錯誤", "error");
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  useEffect(() => {
+    fetchTemplates();
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (broadcastTemplates[currentSlot]) {
+      const t = broadcastTemplates[currentSlot];
+      setEditorName(t.name || '');
+      setEditorContent(t.content || '');
+      setEditorType(t.msg_type || 'text');
+    } else {
+      setEditorName('');
+      setEditorContent('');
+      setEditorType('text');
+    }
+  }, [currentSlot, broadcastTemplates]);
+
   const containerVariants = {
     hidden: { opacity: 0 },
     visible: { opacity: 1, transition: { staggerChildren: 0.1 } }
@@ -175,7 +279,7 @@ function App() {
   };
 
   return (
-    <div className="min-h-screen p-4 md:p-8 max-w-7xl mx-auto">
+    <div className="min-h-screen p-4 md:p-8 max-w-[1600px] mx-auto">
       <div className="bg-mesh"></div>
       
       {/* Header / 頁首 */}
@@ -387,16 +491,16 @@ function App() {
               </motion.div>
             )}
 
-            {activeTab === 'customers' && (
+                {activeTab === 'customers' && (
               <motion.div 
                 key="customers"
                 initial={{ opacity: 0, x: 20 }}
                 animate={{ opacity: 1, x: 0 }}
                 exit={{ opacity: 0, x: -20 }}
-                className="grid grid-cols-1 lg:grid-cols-3 gap-8"
+                className="grid grid-cols-1 lg:grid-cols-12 gap-6"
               >
-                {/* Left: Lead Selector */}
-                <div className="glass rounded-3xl overflow-hidden border border-glass-border flex flex-col h-[calc(100vh-280px)]">
+                {/* Left: Lead Selector (3 cols) */}
+                <div className="lg:col-span-3 glass rounded-3xl overflow-hidden border border-glass-border flex flex-col h-[calc(100vh-280px)]">
                   <div className="p-6 border-b border-glass-border">
                     <h3 className="text-xl font-bold flex items-center gap-2 mb-4">
                       <Search className="size-5 text-accent-cyan" /> 選擇客戶
@@ -433,105 +537,176 @@ function App() {
                   </div>
                 </div>
 
-                {/* Middle: Conversation Logs */}
-                <div className="lg:col-span-2 flex flex-col gap-8">
-                  <div className="glass rounded-3xl overflow-hidden border border-glass-border flex flex-col h-[450px]">
+                {/* Middle: Conversation Logs & List Management (5 cols) */}
+                <div className="lg:col-span-5 flex flex-col gap-6">
+                  <div className="glass rounded-3xl overflow-hidden border border-glass-border flex flex-col h-[400px]">
                     <div className="p-6 border-b border-glass-border flex justify-between items-center">
-                      <h3 className="text-xl font-bold flex items-center gap-2">
+                      <h3 className="text-lg font-bold flex items-center gap-2">
                         <MessageSquare className="size-5 text-primary" /> 對話紀錄
-                        {selectedLead && <span className="text-sm font-normal text-text-secondary ml-2">({selectedLead.name || '訪客'})</span>}
+                        {selectedLead && <span className="text-xs font-normal text-text-secondary ml-2">({selectedLead.name || '訪客'})</span>}
                       </h3>
                     </div>
                     <div className="flex-1 overflow-y-auto p-6 space-y-4 bg-black/20">
                       {selectedLead ? (
                         leadLogs.length > 0 ? leadLogs.map((log, i) => (
                           <div key={i} className={`flex ${log.event_type?.includes('IN') ? 'justify-start' : 'justify-end'}`}>
-                            <div className={`max-w-[80%] p-4 rounded-2xl ${
+                            <div className={`max-w-[85%] p-3 rounded-2xl ${
                               log.event_type?.includes('IN') 
                               ? 'bg-white/10 rounded-tl-none' 
                               : 'bg-primary/20 border border-primary/30 rounded-tr-none text-right'
                             }`}>
-                              <div className="text-[10px] text-text-secondary mb-1">
+                              <div className="text-[9px] text-text-secondary mb-1">
                                 {new Date(log.timestamp).toLocaleString()}
                               </div>
-                              <div className="text-sm whitespace-pre-wrap">{log.content}</div>
+                              <div className="text-xs whitespace-pre-wrap">{log.content}</div>
                             </div>
                           </div>
                         )) : (
-                          <div className="h-full flex items-center justify-center text-text-secondary italic">尚無對話紀錄</div>
+                          <div className="h-full flex items-center justify-center text-text-secondary italic text-sm">尚無對話紀錄</div>
                         )
                       ) : (
-                        <div className="h-full flex items-center justify-center text-text-secondary italic">請先從左側選擇客戶</div>
+                        <div className="h-full flex items-center justify-center text-text-secondary italic text-sm">請先從左側選擇客戶</div>
                       )}
                     </div>
                   </div>
 
-                  {/* Bottom: List Management */}
                   <div className="glass rounded-3xl p-6 border border-glass-border">
-                    <h3 className="text-xl font-bold flex items-center gap-2 mb-6">
-                      <Settings className="size-5 text-accent-pink" /> 客戶名單與標記
+                    <h3 className="text-lg font-bold flex items-center gap-2 mb-4">
+                      <Settings className="size-5 text-accent-pink" /> 名單標記
                     </h3>
-                    
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                      {/* Current Lead's Lists */}
+                    <div className="space-y-4">
                       <div>
-                        <p className="text-xs font-bold text-text-secondary uppercase tracking-widest mb-4">所屬名單</p>
+                        <p className="text-[10px] font-bold text-text-secondary uppercase mb-2">已加入名單</p>
                         <div className="flex flex-wrap gap-2">
                           {selectedLead ? (
                             currentLeadLists.length > 0 ? currentLeadLists.map(list => (
-                              <span key={list.id} className="inline-flex items-center gap-2 px-3 py-1 bg-primary/20 text-primary border border-primary/30 rounded-full text-xs font-bold">
+                              <span key={list.id} className="inline-flex items-center gap-2 px-3 py-1 bg-primary/20 text-primary border border-primary/30 rounded-full text-[10px] font-bold">
                                 {list.name}
                                 <button onClick={() => removeLeadFromList(list.id)} className="hover:text-error transition-colors">×</button>
                               </span>
-                            )) : <div className="text-sm text-text-secondary italic">尚未加入任何名單</div>
-                          ) : <div className="text-sm text-text-secondary italic">請先選擇客戶</div>}
-                        </div>
-                        
-                        <div className="mt-6">
-                          <p className="text-xs font-bold text-text-secondary uppercase tracking-widest mb-4">加入新名單</p>
-                          <div className="flex flex-wrap gap-2">
-                            {selectedLead ? (
-                                availableLists.filter(l => !currentLeadLists.some(cl => cl.id === l.id)).map(list => (
-                                <button 
-                                  key={list.id} 
-                                  onClick={() => addLeadToList(list.id)}
-                                  className="px-3 py-1 bg-white/5 hover:bg-white/10 border border-white/10 rounded-full text-xs"
-                                >
-                                  + {list.name}
-                                </button>
-                              ))
-                            ) : null}
-                          </div>
+                            )) : <div className="text-xs text-text-secondary italic">尚未加入</div>
+                          ) : <div className="text-xs text-text-secondary italic">請先選擇客戶</div>}
                         </div>
                       </div>
-
-                      {/* Global List Management */}
-                      <div className="border-l border-white/5 pl-8">
-                        <p className="text-xs font-bold text-text-secondary uppercase tracking-widest mb-4">管理所有名單分類</p>
-                        <div className="flex gap-2 mb-4">
-                          <input 
-                            type="text" 
-                            placeholder="新增名單名稱..." 
-                            value={newListName}
-                            onChange={(e) => setNewListName(e.target.value)}
-                            className="flex-1 bg-white/5 border border-glass-border rounded-xl px-4 py-2 text-xs focus:outline-none"
-                          />
-                          <button 
-                            onClick={createNewList}
-                            className="p-2 bg-primary rounded-xl hover:scale-105 transition-transform"
-                          >
-                            <Zap className="size-4 text-white" />
-                          </button>
-                        </div>
-                        <div className="space-y-2">
-                          {availableLists.map(list => (
-                            <div key={list.id} className="flex justify-between items-center bg-white/5 px-4 py-2 rounded-xl">
-                              <span className="text-xs">{list.name}</span>
-                              <button onClick={() => deleteList(list.id)} className="text-text-secondary hover:text-error">
-                                <Clock className="size-3" />
-                              </button>
-                            </div>
+                      <div>
+                        <p className="text-[10px] font-bold text-text-secondary uppercase mb-2">可選名單</p>
+                        <div className="flex flex-wrap gap-1">
+                          {selectedLead && availableLists.filter(l => !currentLeadLists.some(cl => cl.id === l.id)).map(list => (
+                            <button 
+                              key={list.id} 
+                              onClick={() => addLeadToList(list.id)}
+                              className="px-2 py-1 bg-white/5 hover:bg-white/10 border border-white/10 rounded-full text-[10px]"
+                            >
+                              + {list.name}
+                            </button>
                           ))}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Right: Message Broadcast Panel (4 cols) */}
+                <div className="lg:col-span-4 flex flex-col gap-6">
+                  <div className="glass rounded-3xl p-6 border border-glass-border h-full flex flex-col">
+                    <div className="flex justify-between items-center mb-6">
+                      <h3 className="text-xl font-bold flex items-center gap-2">
+                        <Zap className="size-5 text-accent-yellow" /> LINE 訊息投放
+                      </h3>
+                      <div className="flex gap-2">
+                        <button onClick={exportTemplate} title="匯出備份" className="p-2 hover:bg-white/5 rounded-lg transition-colors">
+                          <Download className="size-4" />
+                        </button>
+                        <label className="p-2 hover:bg-white/5 rounded-lg transition-colors cursor-pointer">
+                          <Upload className="size-4" />
+                          <input type="file" onChange={importTemplate} className="hidden" accept=".json" />
+                        </label>
+                      </div>
+                    </div>
+
+                    {/* Slot Picker */}
+                    <div className="flex justify-between mb-6 p-1 bg-black/20 rounded-xl">
+                      {[1,2,3,4,5,6,7,8,9].map(i => (
+                        <button
+                          key={i}
+                          onClick={() => setCurrentSlot(i)}
+                          className={`flex-1 py-2 text-sm font-bold rounded-lg transition-all ${
+                            currentSlot === i ? 'bg-primary text-white shadow-lg' : 'hover:bg-white/5 text-text-secondary'
+                          }`}
+                        >
+                          {i}
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="flex-1 flex flex-col gap-4 min-h-0">
+                      <input 
+                        type="text"
+                        placeholder="給這個範本取個名字 (例如: 春季活動)"
+                        value={editorName}
+                        onChange={(e) => setEditorName(e.target.value)}
+                        className="bg-white/5 border border-glass-border rounded-xl px-4 py-2 text-sm focus:outline-none"
+                      />
+                      
+                      <div className="flex gap-2 p-1 bg-white/5 rounded-xl">
+                        <button 
+                          onClick={() => setEditorType('text')}
+                          className={`flex-1 py-1 text-xs rounded-lg ${editorType === 'text' ? 'bg-white/10 font-bold' : 'text-text-secondary'}`}
+                        >純文字</button>
+                        <button 
+                          onClick={() => setEditorType('flex')}
+                          className={`flex-1 py-1 text-xs rounded-lg ${editorType === 'flex' ? 'bg-white/10 font-bold' : 'text-text-secondary'}`}
+                        >Flex 氣泡框</button>
+                      </div>
+
+                      <textarea 
+                        className="flex-1 w-full bg-black/30 border border-glass-border rounded-2xl p-4 text-xs font-mono focus:outline-none resize-none"
+                        placeholder={editorType === 'text' ? "輸入訊息內容..." : "請貼入 LINE Flex Message JSON..."}
+                        value={editorContent}
+                        onChange={(e) => setEditorContent(e.target.value)}
+                      />
+                      
+                      <button 
+                        onClick={saveCurrentTemplate}
+                        className="w-full py-3 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl text-sm font-bold transition-all mb-4"
+                      >儲存目前分頁內容</button>
+
+                      <div className="space-y-4 pt-4 border-t border-white/5">
+                        <div>
+                          <p className="text-[10px] font-bold text-text-secondary uppercase mb-2">選擇目標名單</p>
+                          <select 
+                            value={targetListId}
+                            onChange={(e) => setTargetListId(e.target.value)}
+                            className="w-full bg-white/5 border border-glass-border rounded-xl px-4 py-2 text-sm focus:outline-none"
+                          >
+                            <option value="">-- 選擇名單 --</option>
+                            {availableLists.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
+                          </select>
+                        </div>
+                        
+                        <div>
+                          <p className="text-[10px] font-bold text-text-secondary uppercase mb-2">預約發送 (選填)</p>
+                          <input 
+                            type="datetime-local" 
+                            value={scheduledTime}
+                            onChange={(e) => setScheduledTime(e.target.value)}
+                            className="w-full bg-white/5 border border-glass-border rounded-xl px-4 py-2 text-sm focus:outline-none"
+                          />
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-4">
+                          <button 
+                            onClick={() => handleBroadcast(false)}
+                            className="py-3 bg-primary hover:scale-[1.02] active:scale-[0.98] rounded-xl text-sm font-bold transition-all flex items-center justify-center gap-2"
+                          >
+                            <Send className="size-4" /> 立即發送
+                          </button>
+                          <button 
+                            onClick={() => handleBroadcast(true)}
+                            className="py-3 bg-white/10 hover:bg-white/20 rounded-xl text-sm font-bold transition-all flex items-center justify-center gap-2"
+                          >
+                            <Clock className="size-4" /> 預約排程
+                          </button>
                         </div>
                       </div>
                     </div>
@@ -641,6 +816,24 @@ function App() {
           </div>
         </section>
       </main>
+
+      {/* Notification Toast */}
+      <AnimatePresence>
+        {notification && (
+          <motion.div
+            initial={{ opacity: 0, y: 50, x: '-50%' }}
+            animate={{ opacity: 1, y: 0, x: '-50%' }}
+            exit={{ opacity: 0, y: 50, x: '-50%' }}
+            className={`fixed bottom-8 left-1/2 -translate-x-1/2 px-6 py-3 rounded-2xl shadow-2xl z-[100] font-bold text-sm border ${
+              notification.type === 'success' 
+              ? 'bg-success/20 text-success border-success/30 backdrop-blur-xl' 
+              : 'bg-error/20 text-error border-error/30 backdrop-blur-xl'
+            }`}
+          >
+            {notification.msg}
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
