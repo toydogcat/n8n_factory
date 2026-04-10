@@ -5,7 +5,9 @@ from datetime import datetime
 import os
 
 # Database Setup (using SQLite for portability)
-DB_PATH = "/home/toymsi/documents/projects/n8n_factory/backend/data.db"
+# Updated to use relative path for better portability
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(BASE_DIR, "data.db")
 SQLALCHEMY_DATABASE_URL = f"sqlite:///{DB_PATH}"
 
 engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
@@ -39,10 +41,23 @@ class InteractionLog(Base):
     __tablename__ = "interaction_logs"
 
     id = Column(Integer, primary_key=True, index=True)
-    entity_id = Column(Integer)  # ID of Lead or Task
-    event_type = Column(String)  # MESSAGE_IN, MESSAGE_OUT, SCRAPE_SUCCESS
+    entity_id = Column(String)  # Using line_uid or ID to link to Lead
+    event_type = Column(String)  # BOT_CMD_IN, BOT_CMD_OUT, TRIGGER_SUCCESS
     content = Column(String)
     timestamp = Column(DateTime, default=datetime.utcnow)
+
+class CustomerList(Base):
+    __tablename__ = "customer_lists"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, unique=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+class LeadListAssociation(Base):
+    __tablename__ = "lead_list_associations"
+    
+    lead_id = Column(Integer, ForeignKey("leads.id"), primary_key=True)
+    list_id = Column(Integer, ForeignKey("customer_lists.id"), primary_key=True)
 
 # Create tables
 def init_db():

@@ -12,7 +12,7 @@ from datetime import datetime
 
 # Import DB
 import models
-from models import get_db, init_db, Lead, AutomatonTask, InteractionLog
+from models import get_db, init_db, Lead, AutomatonTask, InteractionLog, CustomerList, LeadListAssociation
 
 load_dotenv()
 init_db()
@@ -55,8 +55,8 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
-async def log_event(event_type: str, data: Any, db: Optional[Session] = None):
-    payload_str = json.dumps({"type": event_type, "data": data})
+async def log_event(event_type: str, data: Any, db: Optional[Session] = None, entity_id: Optional[str] = None):
+    payload_str = json.dumps({"type": event_type, "data": data, "entity_id": entity_id})
     logger.info(f"Event: {event_type} - {payload_str}")
     await manager.broadcast(payload_str)
     
@@ -64,6 +64,7 @@ async def log_event(event_type: str, data: Any, db: Optional[Session] = None):
     if db:
         new_log = InteractionLog(
             event_type=event_type,
+            entity_id=entity_id,
             content=str(data),
             timestamp=datetime.utcnow()
         )
@@ -90,7 +91,7 @@ async def bot_command_handler(cmd: BotCommand, db: Session = Depends(get_db)):
     """
     try:
         text = cmd.message.strip().lower()
-        await log_event("BOT_CMD_IN", cmd.dict(), db)
+        await log_event("BOT_CMD_IN", cmd.dict(), db, entity_id=cmd.uid)
 
         # 1. Update or Create Lead
         lead = db.query(Lead).filter(Lead.line_uid == cmd.uid).first()
@@ -142,7 +143,7 @@ async def bot_command_handler(cmd: BotCommand, db: Session = Depends(get_db)):
             "action_taken": action,
             "lead_status": lead.status
         }
-        await log_event("BOT_CMD_OUT", result, db)
+        await log_event("BOT_CMD_OUT", result, db, entity_id=cmd.uid)
         return result
     except Exception as e:
         logger.error(f"Error in bot_command_handler: {e}")
@@ -164,6 +165,83 @@ async def get_leads(db: Session = Depends(get_db)):
 async def get_tasks(db: Session = Depends(get_db)):
     """Fetch all automation tasks for the dashboard."""
     return db.query(AutomatonTask).all()
+
+# --- Customer List Management API ---
+
+class ListCreate(BaseModel):
+    name: str
+
+@app.get("/lists")
+async def get_all_lists(db: Session = Depends(get_db)):
+    """Retrieve all custom customer lists."""
+    return db.query(CustomerList).all()
+
+@app.post("/lists")
+async def create_list(lc: ListCreate, db: Session = Depends(get_db)):
+    """Create a new list (e.g., '愛喝酒名單')."""
+    new_list = CustomerList(name=lc.name)
+    db.add(new_list)
+    try:
+        db.commit()
+        db.refresh(new_list)
+        return new_list
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="List already exists or DB error")
+
+@app.delete("/lists/{list_id}")
+async def delete_list(list_id: int, db: Session = Depends(get_db)):
+    """Delete a list."""
+    target = db.query(CustomerList).filter(CustomerList.id == list_id).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="List not found")
+    db.delete(target)
+    db.commit()
+    return {"status": "success"}
+
+@app.get("/leads/{lead_id}/logs")
+async def get_lead_logs(lead_id: int, db: Session = Depends(get_db)):
+    """Fetch full conversation history for a specific Lead."""
+    lead = db.query(Lead).filter(Lead.id == lead_id).first()
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    
+    # Filter by UID or Entity ID
+    return db.query(InteractionLog).filter(InteractionLog.entity_id == lead.line_uid).order_by(InteractionLog.timestamp.desc()).all()
+
+@app.post("/leads/{lead_id}/lists/{list_id}")
+async def add_lead_to_list(lead_id: int, list_id: int, db: Session = Depends(get_db)):
+    """Associate lead with a list."""
+    assoc = LeadListAssociation(lead_id=lead_id, list_id=list_id)
+    db.add(assoc)
+    try:
+        db.commit()
+        return {"status": "success"}
+    except:
+        db.rollback()
+        return {"status": "already_associated"}
+
+@app.delete("/leads/{lead_id}/lists/{list_id}")
+async def remove_lead_from_list(lead_id: int, list_id: int, db: Session = Depends(get_db)):
+    """Remove lead from a list."""
+    assoc = db.query(LeadListAssociation).filter(
+        LeadListAssociation.lead_id == lead_id,
+        LeadListAssociation.list_id == list_id
+    ).first()
+    if assoc:
+        db.delete(assoc)
+        db.commit()
+    return {"status": "success"}
+
+@app.get("/leads/{lead_id}/lists")
+async def get_lead_lists(lead_id: int, db: Session = Depends(get_db)):
+    """Get all lists a lead belongs to."""
+    return db.query(CustomerList).join(LeadListAssociation).filter(LeadListAssociation.lead_id == lead_id).all()
+
+@app.get("/lists/{list_id}/leads")
+async def get_list_leads(list_id: int, db: Session = Depends(get_db)):
+    """Get all leads in a specific list."""
+    return db.query(Lead).join(LeadListAssociation).filter(LeadListAssociation.list_id == list_id).all()
 
 # --- Automation Trigger (Scenario 4) ---
 

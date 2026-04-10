@@ -22,27 +22,40 @@ import {
 import axios from 'axios';
 import { motion, AnimatePresence } from 'framer-motion';
 
-// 動態偵測後端 IP
-const hostname = window.location.hostname === 'localhost' ? '192.168.0.147' : window.location.hostname;
-const API_BASE = `http://${hostname}:8000`;
-const WS_URL = `ws://${hostname}:8000/ws/logs`;
+// 從 .env 讀取後端設定，若無則自動偵測當前 IP
+const apiHost = import.meta.env.VITE_API_HOST || window.location.hostname;
+const apiPort = import.meta.env.VITE_API_PORT || '8000';
+
+const API_BASE = `http://${apiHost}:${apiPort}`;
+const WS_URL = `ws://${apiHost}:${apiPort}/ws/logs`;
 
 function App() {
   const [logs, setLogs] = useState([]);
   const [leads, setLeads] = useState([]);
   const [tasks, setTasks] = useState([]);
-  const [activeTab, setActiveTab] = useState('dashboard'); // dashboard, leads, analytics
+  const [activeTab, setActiveTab] = useState('dashboard'); // dashboard, leads, customers, analytics
   const [isConnected, setIsConnected] = useState(false);
+  
+  // 客戶管理相關狀態
+  const [selectedLead, setSelectedLead] = useState(null);
+  const [leadLogs, setLeadLogs] = useState([]);
+  const [availableLists, setAvailableLists] = useState([]);
+  const [currentLeadLists, setCurrentLeadLists] = useState([]);
+  const [newListName, setNewListName] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
+  
   const logEndRef = useRef(null);
 
   const fetchData = async () => {
     try {
-      const [leadsRes, tasksRes] = await Promise.all([
+      const [leadsRes, tasksRes, listsRes] = await Promise.all([
         axios.get(`${API_BASE}/leads`),
-        axios.get(`${API_BASE}/tasks`)
+        axios.get(`${API_BASE}/tasks`),
+        axios.get(`${API_BASE}/lists`)
       ]);
       setLeads(leadsRes.data);
       setTasks(tasksRes.data);
+      setAvailableLists(listsRes.data);
       setIsConnected(true);
     } catch (error) {
       console.error("Fetch Error:", error);
@@ -97,6 +110,59 @@ function App() {
       console.error('Trigger Error:', error);
     }
   };
+  const fetchLeadDetails = async (lead) => {
+    setSelectedLead(lead);
+    try {
+      const [logsRes, listsRes] = await Promise.all([
+        axios.get(`${API_BASE}/leads/${lead.id}/logs`),
+        axios.get(`${API_BASE}/leads/${lead.id}/lists`)
+      ]);
+      setLeadLogs(logsRes.data);
+      setCurrentLeadLists(listsRes.data);
+    } catch (error) {
+      console.error('Fetch Lead Details Error:', error);
+    }
+  };
+
+  const createNewList = async () => {
+    if (!newListName.trim()) return;
+    try {
+      await axios.post(`${API_BASE}/lists`, { name: newListName });
+      setNewListName('');
+      fetchData();
+    } catch (error) {
+      console.error('Create List Error:', error);
+    }
+  };
+
+  const addLeadToList = async (listId) => {
+    if (!selectedLead) return;
+    try {
+      await axios.post(`${API_BASE}/leads/${selectedLead.id}/lists/${listId}`);
+      fetchLeadDetails(selectedLead);
+    } catch (error) {
+      console.error('Add to List Error:', error);
+    }
+  };
+
+  const removeLeadFromList = async (listId) => {
+    if (!selectedLead) return;
+    try {
+      await axios.delete(`${API_BASE}/leads/${selectedLead.id}/lists/${listId}`);
+      fetchLeadDetails(selectedLead);
+    } catch (error) {
+      console.error('Remove from List Error:', error);
+    }
+  };
+
+  const deleteList = async (listId) => {
+    try {
+      await axios.delete(`${API_BASE}/lists/${listId}`);
+      fetchData();
+    } catch (error) {
+      console.error('Delete List Error:', error);
+    }
+  };
 
   const containerVariants = {
     hidden: { opacity: 0 },
@@ -137,6 +203,7 @@ function App() {
           {[
             { id: 'dashboard', label: '控制儀表板' },
             { id: 'leads', label: '線索管理' },
+            { id: 'customers', label: '客戶名單管理' },
             { id: 'analytics', label: '數據分析' }
           ].map(tab => (
             <button 
@@ -316,6 +383,159 @@ function App() {
                       )}
                     </tbody>
                   </table>
+                </div>
+              </motion.div>
+            )}
+
+            {activeTab === 'customers' && (
+              <motion.div 
+                key="customers"
+                initial={{ opacity: 0, x: 20 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: -20 }}
+                className="grid grid-cols-1 lg:grid-cols-3 gap-8"
+              >
+                {/* Left: Lead Selector */}
+                <div className="glass rounded-3xl overflow-hidden border border-glass-border flex flex-col h-[calc(100vh-280px)]">
+                  <div className="p-6 border-b border-glass-border">
+                    <h3 className="text-xl font-bold flex items-center gap-2 mb-4">
+                      <Search className="size-5 text-accent-cyan" /> 選擇客戶
+                    </h3>
+                    <div className="relative">
+                      <Search className="size-4 absolute left-3 top-1/2 -translate-y-1/2 text-text-secondary" />
+                      <input 
+                        type="text" 
+                        placeholder="搜尋 UID 或 名稱..."
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        className="w-full bg-white/5 border border-glass-border rounded-xl pl-10 pr-4 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary/50"
+                      />
+                    </div>
+                  </div>
+                  <div className="flex-1 overflow-y-auto p-2 space-y-1">
+                    {leads.filter(l => 
+                      (l.name || '').toLowerCase().includes(searchQuery.toLowerCase()) || 
+                      l.line_uid.toLowerCase().includes(searchQuery.toLowerCase())
+                    ).map(lead => (
+                      <button
+                        key={lead.id}
+                        onClick={() => fetchLeadDetails(lead)}
+                        className={`w-full text-left p-4 rounded-2xl transition-all ${
+                          selectedLead?.id === lead.id 
+                          ? 'bg-primary/20 border border-primary/30' 
+                          : 'hover:bg-white/5 border border-transparent'
+                        }`}
+                      >
+                        <div className="font-bold">{lead.name || '訪客'}</div>
+                        <div className="text-xs text-text-secondary font-mono truncate">{lead.line_uid}</div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Middle: Conversation Logs */}
+                <div className="lg:col-span-2 flex flex-col gap-8">
+                  <div className="glass rounded-3xl overflow-hidden border border-glass-border flex flex-col h-[450px]">
+                    <div className="p-6 border-b border-glass-border flex justify-between items-center">
+                      <h3 className="text-xl font-bold flex items-center gap-2">
+                        <MessageSquare className="size-5 text-primary" /> 對話紀錄
+                        {selectedLead && <span className="text-sm font-normal text-text-secondary ml-2">({selectedLead.name || '訪客'})</span>}
+                      </h3>
+                    </div>
+                    <div className="flex-1 overflow-y-auto p-6 space-y-4 bg-black/20">
+                      {selectedLead ? (
+                        leadLogs.length > 0 ? leadLogs.map((log, i) => (
+                          <div key={i} className={`flex ${log.event_type?.includes('IN') ? 'justify-start' : 'justify-end'}`}>
+                            <div className={`max-w-[80%] p-4 rounded-2xl ${
+                              log.event_type?.includes('IN') 
+                              ? 'bg-white/10 rounded-tl-none' 
+                              : 'bg-primary/20 border border-primary/30 rounded-tr-none text-right'
+                            }`}>
+                              <div className="text-[10px] text-text-secondary mb-1">
+                                {new Date(log.timestamp).toLocaleString()}
+                              </div>
+                              <div className="text-sm whitespace-pre-wrap">{log.content}</div>
+                            </div>
+                          </div>
+                        )) : (
+                          <div className="h-full flex items-center justify-center text-text-secondary italic">尚無對話紀錄</div>
+                        )
+                      ) : (
+                        <div className="h-full flex items-center justify-center text-text-secondary italic">請先從左側選擇客戶</div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Bottom: List Management */}
+                  <div className="glass rounded-3xl p-6 border border-glass-border">
+                    <h3 className="text-xl font-bold flex items-center gap-2 mb-6">
+                      <Settings className="size-5 text-accent-pink" /> 客戶名單與標記
+                    </h3>
+                    
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                      {/* Current Lead's Lists */}
+                      <div>
+                        <p className="text-xs font-bold text-text-secondary uppercase tracking-widest mb-4">所屬名單</p>
+                        <div className="flex flex-wrap gap-2">
+                          {selectedLead ? (
+                            currentLeadLists.length > 0 ? currentLeadLists.map(list => (
+                              <span key={list.id} className="inline-flex items-center gap-2 px-3 py-1 bg-primary/20 text-primary border border-primary/30 rounded-full text-xs font-bold">
+                                {list.name}
+                                <button onClick={() => removeLeadFromList(list.id)} className="hover:text-error transition-colors">×</button>
+                              </span>
+                            )) : <div className="text-sm text-text-secondary italic">尚未加入任何名單</div>
+                          ) : <div className="text-sm text-text-secondary italic">請先選擇客戶</div>}
+                        </div>
+                        
+                        <div className="mt-6">
+                          <p className="text-xs font-bold text-text-secondary uppercase tracking-widest mb-4">加入新名單</p>
+                          <div className="flex flex-wrap gap-2">
+                            {selectedLead ? (
+                                availableLists.filter(l => !currentLeadLists.some(cl => cl.id === l.id)).map(list => (
+                                <button 
+                                  key={list.id} 
+                                  onClick={() => addLeadToList(list.id)}
+                                  className="px-3 py-1 bg-white/5 hover:bg-white/10 border border-white/10 rounded-full text-xs"
+                                >
+                                  + {list.name}
+                                </button>
+                              ))
+                            ) : null}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Global List Management */}
+                      <div className="border-l border-white/5 pl-8">
+                        <p className="text-xs font-bold text-text-secondary uppercase tracking-widest mb-4">管理所有名單分類</p>
+                        <div className="flex gap-2 mb-4">
+                          <input 
+                            type="text" 
+                            placeholder="新增名單名稱..." 
+                            value={newListName}
+                            onChange={(e) => setNewListName(e.target.value)}
+                            className="flex-1 bg-white/5 border border-glass-border rounded-xl px-4 py-2 text-xs focus:outline-none"
+                          />
+                          <button 
+                            onClick={createNewList}
+                            className="p-2 bg-primary rounded-xl hover:scale-105 transition-transform"
+                          >
+                            <Zap className="size-4 text-white" />
+                          </button>
+                        </div>
+                        <div className="space-y-2">
+                          {availableLists.map(list => (
+                            <div key={list.id} className="flex justify-between items-center bg-white/5 px-4 py-2 rounded-xl">
+                              <span className="text-xs">{list.name}</span>
+                              <button onClick={() => deleteList(list.id)} className="text-text-secondary hover:text-error">
+                                <Clock className="size-3" />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </motion.div>
             )}
