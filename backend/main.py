@@ -8,11 +8,13 @@ from pydantic import BaseModel
 from n8n_helper import N8NClient
 from dotenv import load_dotenv
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 from datetime import datetime
 
+import re
 # Import DB
 import models
-from models import get_db, init_db, Lead, AutomatonTask, InteractionLog, CustomerList, LeadListAssociation, MessageTemplate, BroadcastJob
+from models import get_db, init_db, Lead, AutomatonTask, InteractionLog, CustomerList, LeadListAssociation, MessageTemplate, BroadcastJob, OnboardingStep, SessionLocal
 from fastapi import BackgroundTasks
 import asyncio
 
@@ -107,6 +109,42 @@ async def bot_command_handler(cmd: BotCommand, db: Session = Depends(get_db)):
         if lead.meta_info is None:
             lead.meta_info = {}
 
+        # --- Entity Extraction (Automatic) ---
+        email_match = re.search(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', text)
+        if email_match:
+            lead.meta_info = {**lead.meta_info, "email": email_match.group(0)}
+            
+        phone_match = re.search(r'09\d{8}', text)
+        if phone_match:
+            lead.meta_info = {**lead.meta_info, "phone": phone_match.group(0)}
+            
+        # Title/Gender extraction
+        for title in ["先生", "小姐", "女士", "男", "女"]:
+            if title in text:
+                lead.meta_info = {**lead.meta_info, "title": title}
+                break
+        
+        db.commit()
+
+        # --- Onboarding Logic (Newcomer Tutorial) ---
+        if lead.onboarding_step >= 0:
+            # Check for next step
+            next_step = db.query(OnboardingStep).filter(OnboardingStep.step_index == lead.onboarding_step + 1).first()
+            if next_step:
+                lead.onboarding_step += 1
+                db.commit()
+                return {
+                    "response": next_step.message, 
+                    "msg_type": next_step.msg_type, 
+                    "action": f"ONBOARDING_STEP_{lead.onboarding_step}"
+                }
+            else:
+                # Finished onboarding
+                if lead.onboarding_step > 0:
+                    lead.onboarding_step = -1 # Mark as completed
+                    db.commit()
+                    # Optional: send a final welcome if it's the first time finishing
+        
         # 2. Process Commands
         response_msg = ""
         action = "NONE"
@@ -234,6 +272,30 @@ async def remove_lead_from_list(lead_id: int, list_id: int, db: Session = Depend
         db.delete(assoc)
         db.commit()
     return {"status": "success"}
+
+@app.get("/leads/{lead_id}/ai-context")
+async def get_lead_ai_context(lead_id: int, db: Session = Depends(get_db)):
+    """
+    Gather logs and metadata for a lead to help the AI perform semantic analysis.
+    """
+    lead = db.query(Lead).filter(Lead.id == lead_id).first()
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    
+    logs = db.query(InteractionLog).filter(
+        InteractionLog.entity_id == lead.line_uid
+    ).order_by(InteractionLog.timestamp.desc()).limit(20).all()
+    
+    log_texts = [f"[{log.timestamp}] {log.event_type}: {log.content}" for log in logs]
+    
+    return {
+        "lead_id": lead.id,
+        "line_uid": lead.line_uid,
+        "name": lead.name,
+        "current_meta": lead.meta_info,
+        "recent_logs": log_texts,
+        "prompt_hint": f"請幫我分析客戶 {lead.name} 的對話紀錄，看看是否有遺漏的手機、Email 或性別資訊。"
+    }
 
 @app.get("/leads/{lead_id}/lists")
 async def get_lead_lists(lead_id: int, db: Session = Depends(get_db)):
@@ -403,6 +465,82 @@ async def websocket_endpoint(websocket: WebSocket):
     except Exception as e:
         logger.error(f"WS error: {e}")
         manager.disconnect(websocket)
+
+# --- Analytics Lab API ---
+
+class SQLQuery(BaseModel):
+    query: str
+
+@app.post("/api/analytics/query")
+async def execute_sql_query(payload: SQLQuery, db: Session = Depends(get_db)):
+    """
+    Execute raw SQL for analytics. 
+    Returns list of records formatted as dicts.
+    """
+    try:
+        # Check for harmful verbs (STRICT blocking for IT beginners)
+        forbidden = ["drop", "delete", "update", "insert", "truncate", "alter"]
+        q_lower = payload.query.lower()
+        if any(verb in q_lower for verb in forbidden):
+            raise HTTPException(
+                status_code=403, 
+                detail="基於安全考量(IT小白保護機制)，禁止執行非查詢類(SELECT)的指令。"
+            )
+            
+        result = db.execute(text(payload.query))
+        
+        # Check if the result has rows (is a SELECT)
+        if result.returns_rows:
+            rows = result.fetchall()
+            # Convert Row objects to dictionaries
+            keys = result.keys()
+            data = [dict(zip(keys, row)) for row in rows]
+            return {"data": data, "cols": list(keys)}
+        else:
+            db.commit() # Commit in case they did an insert/update despite warning
+            return {"message": "Command executed successfully", "data": [], "cols": []}
+            
+    except Exception as e:
+        logger.error(f"SQL Execution Error: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+# --- Onboarding Management API ---
+
+@app.get("/api/onboarding/steps")
+async def get_onboarding_steps(db: Session = Depends(get_db)):
+    return db.query(OnboardingStep).order_by(OnboardingStep.step_index).all()
+
+@app.post("/api/onboarding/steps")
+async def create_onboarding_step(step: Dict[str, Any], db: Session = Depends(get_db)):
+    new_step = OnboardingStep(**step)
+    db.add(new_step)
+    db.commit()
+    db.refresh(new_step)
+    return new_step
+
+@app.delete("/api/onboarding/steps/{step_id}")
+async def delete_onboarding_step(step_id: int, db: Session = Depends(get_db)):
+    step = db.query(OnboardingStep).filter(OnboardingStep.id == step_id).first()
+    if step:
+        db.delete(step)
+        db.commit()
+    return {"status": "success"}
+
+# Initialize default onboarding if empty
+@app.on_event("startup")
+async def init_onboarding_defaults():
+    db = SessionLocal()
+    try:
+        if db.query(OnboardingStep).count() == 0:
+            defaults = [
+                OnboardingStep(step_index=1, message="你好很高興認識你！我是 AI 助手。請問我該怎麼稱呼您呢？（例如：王先生、林小姐）", msg_type="text"),
+                OnboardingStep(step_index=2, message="太好了！為了方便日後聯繫，可以留下您的 Email 或手機嗎？", msg_type="text"),
+                OnboardingStep(step_index=3, message="感謝您的資訊！我已經為您準備好專屬服務了，請問有什麼我可以幫您的？", msg_type="text")
+            ]
+            db.add_all(defaults)
+            db.commit()
+    finally:
+        db.close()
 
 if __name__ == "__main__":
     import uvicorn

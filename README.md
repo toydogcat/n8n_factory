@@ -41,29 +41,27 @@ graph LR
 - `n8n_templates/`: 存放匯出的 n8n 工作流 (JSON)。
 - `ai_notices/`: 專案實作計畫與進度紀錄。
 
-## 🏁 快速啟動
+## 🏁 快速啟動 (One-Click Setup)
 
-### 1. 環境設定
-複製 `.env.example` 並設定連線參數：
+本專案支援一鍵啟動前後端，並自動完成 IP 同步與環境檢查。
+
+### Linux / macOS
 ```bash
-cp .env.example .env
+./run
 ```
 
-### 2. 啟動後端
-```bash
-cd backend
-pip install -r requirements.txt
-python main.py
+### Windows (CMD/PowerShell)
+```cmd
+run.bat
 ```
-*預設運行於 `http://0.0.0.0:8000`*
 
-### 3. 啟動前端
-```bash
-cd frontend
-npm install
-npm run dev
-```
-*預設訪問 `http://localhost:5173`*
+> [!NOTE]
+> 啟動前請確保已建立好 **Conda** 環境 (名稱為 `toby`) 並安裝 **Node.js**。若是第一次啟動，指令會自動安裝所需的 `node_modules`。
+
+### 手動環境設定
+1. **IP 同步 (選填)**：若 IP 變動，系統會自動處理，但您也可手動執行 `python backend/sync_n8n_ip.py`。
+2. **Conda 環境**：`conda create -n toby python=3.12`
+3. **設定檔**：複製 `.env.example` 並設定為 `.env`。
 
 ## 🌟 核心功能
 
@@ -71,6 +69,12 @@ npm run dev
 - ✅ **線索自動追蹤 (Lead Tracking)**：自動記錄每一位互動用戶。
 - ✅ **即時日誌 (Live Trace)**：透過 WebSocket 監控系統的所有動作。
 - ✅ **自動化控制台**：直接從網頁觸發 n8n 流程。
+- ✅ **LINE 訊息投放系統**：9 欄位訊息編輯器，支援 Flex Message 與定時群體發送。
+- ✅ **📈 SQL 數據分析實驗室**：
+    - **自定義查詢**：直接在儀表板執行 SQL 查詢。
+    - **雙向對比**：支持 SQL1 vs SQL2 並列分析，自動計算成長率。
+    - **AI 商業分析助理**：內建 `SQL Business Analyst` 核心技能，可透過對話協作將「商業活動需求」翻譯為「精準 SQL 指令」。
+    - **小白防護**：自動欄截 `DELETE/DROP` 等危險指令，確保數據安全。
 
 ---
 

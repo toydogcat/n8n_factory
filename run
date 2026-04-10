@@ -21,8 +21,12 @@ cd "$(dirname "$0")"
 echo -e "${BLUE}🔄 Synchronizing IP addresses...${NC}"
 if command -v conda &> /dev/null; then
     conda run -n $CONDA_ENV python backend/sync_n8n_ip.py
+    echo -e "${BLUE}📦 Installing backend dependencies...${NC}"
+    conda run -n $CONDA_ENV pip install -r backend/requirements.txt
 else
     python backend/sync_n8n_ip.py
+    echo -e "${BLUE}📦 Installing backend dependencies...${NC}"
+    pip install -r backend/requirements.txt
 fi
 
 # Function to cleanup background processes on exit

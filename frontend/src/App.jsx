@@ -20,7 +20,18 @@ import {
   Send,
   Download,
   Upload,
-  Zap
+  Zap,
+  Play,
+  Database,
+  Code,
+  Copy,
+  PlusCircle,
+  MinusCircle,
+  Table,
+  BookOpen,
+  UserPlus,
+  BrainCircuit,
+  User
 } from 'lucide-react';
 import axios from 'axios';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -56,6 +67,19 @@ function App() {
   const [targetListId, setTargetListId] = useState('');
   const [scheduledTime, setScheduledTime] = useState('');
   const [notification, setNotification] = useState(null);
+  
+  // SQL Analysis Lab State
+  const [sqlQueries, setSqlQueries] = useState([
+    { id: 'sql1', query: "SELECT count(*) as count FROM interaction_logs WHERE content LIKE '%中秋節%'", result: null, loading: false },
+    { id: 'sql2', query: "SELECT count(*) as count FROM interaction_logs WHERE content LIKE '%國慶日%'", result: null, loading: false }
+  ]);
+  const [showComparison, setShowComparison] = useState(false);
+  
+  // Onboarding Engine State
+  const [onboardingSteps, setOnboardingSteps] = useState([]);
+  const [newStepMsg, setNewStepMsg] = useState('');
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [leadAIContext, setLeadAIContext] = useState(null);
   
   const logEndRef = useRef(null);
 
@@ -251,8 +275,95 @@ function App() {
     reader.readAsText(file);
   };
 
+  // SQL Execution logic
+  const runSqlQuery = async (index) => {
+    const newQueries = [...sqlQueries];
+    newQueries[index].loading = true;
+    setSqlQueries(newQueries);
+
+    try {
+      const res = await axios.post(`${API_BASE}/api/analytics/query`, { 
+        query: newQueries[index].query 
+      });
+      const updatedQueries = [...sqlQueries];
+      updatedQueries[index].result = res.data;
+      updatedQueries[index].loading = false;
+      setSqlQueries(updatedQueries);
+      showNotification("查詢執行成功", "success");
+    } catch (err) {
+      console.error(err);
+      const updatedQueries = [...sqlQueries];
+      updatedQueries[index].loading = false;
+      setSqlQueries(updatedQueries);
+      showNotification(err.response?.data?.detail || "SQL 語法錯誤", "error");
+    }
+  };
+
+  // --- Onboarding Management Functions ---
+  const fetchOnboardingSteps = async () => {
+    try {
+      const res = await axios.get(`${API_BASE}/api/onboarding/steps`);
+      setOnboardingSteps(res.data);
+    } catch (err) {
+      console.error("Error fetching onboarding steps", err);
+    }
+  };
+
+  const handleAIRecovery = async (leadId) => {
+    setIsAnalyzing(true);
+    try {
+      const res = await fetch(`${API_BASE}/leads/${leadId}/ai-context`);
+      const data = await res.json();
+      setLeadAIContext(data);
+      showNotification(`已取得分析資料，請將右側日誌中的 Context 貼給 AI 進行恢復。`, "success");
+      
+      // Auto-log to special trace for easier copy-paste
+      const analysisLog = {
+        timestamp: new Date().toLocaleTimeString(),
+        type: "🤖 AI RECOVERY CONTEXT",
+        data: {
+          hint: data.prompt_hint,
+          logs: data.recent_logs,
+          instructions: "請複製上方 logs 並在對話視窗中使用 'SQL Business Analyst' 技能進行語意分析。"
+        }
+      };
+      setLogs(prev => [analysisLog, ...prev]);
+    } catch (err) {
+      showNotification("分析資料取得失敗", "error");
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
+  const addOnboardingStep = async () => {
+    if (!newStepMsg.trim()) return;
+    try {
+      await axios.post(`${API_BASE}/api/onboarding/steps`, {
+        step_index: onboardingSteps.length + 1,
+        message: newStepMsg,
+        msg_type: 'text'
+      });
+      setNewStepMsg('');
+      fetchOnboardingSteps();
+      showNotification("教學步驟已新增", "success");
+    } catch (err) {
+      showNotification("新增失敗", "error");
+    }
+  };
+
+  const deleteOnboardingStep = async (id) => {
+    try {
+      await axios.delete(`${API_BASE}/api/onboarding/steps/${id}`);
+      fetchOnboardingSteps();
+      showNotification("步驟已刪除", "success");
+    } catch (err) {
+      showNotification("刪除失敗", "error");
+    }
+  };
+
   useEffect(() => {
     fetchTemplates();
+    fetchOnboardingSteps();
   }, [activeTab]);
 
   useEffect(() => {
@@ -308,7 +419,8 @@ function App() {
             { id: 'dashboard', label: '控制儀表板' },
             { id: 'leads', label: '線索管理' },
             { id: 'customers', label: '客戶名單管理' },
-            { id: 'analytics', label: '數據分析' }
+            { id: 'analytics', label: '數據分析' },
+            { id: 'onboarding', label: '新手教學設定' }
           ].map(tab => (
             <button 
               key={tab.id}
@@ -472,7 +584,14 @@ function App() {
                               {new Date(lead.last_interaction).toLocaleString()}
                             </div>
                           </td>
-                          <td className="px-8 py-5 text-right">
+                          <td className="px-8 py-5 text-right flex justify-end gap-2">
+                            <button 
+                              onClick={() => handleAIRecovery(lead.id)}
+                              className="p-2 hover:bg-accent-cyan/20 rounded-lg transition-all text-text-secondary hover:text-accent-cyan"
+                              title="AI 語意恢復"
+                            >
+                              <BrainCircuit className="size-5" />
+                            </button>
                             <button className="p-2 hover:bg-primary/20 rounded-lg transition-all text-text-secondary hover:text-primary">
                               <ExternalLink className="size-5" />
                             </button>
@@ -693,7 +812,6 @@ function App() {
                             className="w-full bg-white/5 border border-glass-border rounded-xl px-4 py-2 text-sm focus:outline-none"
                           />
                         </div>
-
                         <div className="grid grid-cols-2 gap-4">
                           <button 
                             onClick={() => handleBroadcast(false)}
@@ -718,50 +836,181 @@ function App() {
             {activeTab === 'analytics' && (
               <motion.div 
                 key="analytics"
-                initial={{ opacity: 0, scale: 0.95 }}
-                animate={{ opacity: 1, scale: 1 }}
-                exit={{ opacity: 0, scale: 0.95 }}
-                className="grid grid-cols-1 md:grid-cols-2 gap-8"
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -20 }}
+                className="space-y-8"
               >
-                <div className="glass-card p-8">
-                  <h3 className="text-xl font-bold mb-8 flex items-center gap-2">
-                    <BarChart3 className="size-6 text-accent-pink" /> 系統互動趨勢
-                  </h3>
-                  <div className="h-64 flex items-end justify-between gap-3 px-2">
-                    {[40, 70, 45, 90, 65, 80, 55].map((h, i) => (
-                      <motion.div 
-                        key={i} 
-                        initial={{ height: 0 }}
-                        animate={{ height: `${h}%` }}
-                        transition={{ delay: i * 0.1, duration: 1, ease: "easeOut" }}
-                        className="w-full bg-gradient-to-t from-primary/30 via-primary/70 to-primary rounded-t-xl transition-all hover:brightness-125 relative group"
-                      >
-                        <div className="absolute -top-10 left-1/2 -translate-x-1/2 bg-white text-black px-2 py-1 rounded text-[10px] font-bold opacity-0 group-hover:opacity-100 transition-opacity">
-                          {h*12}
-                        </div>
-                      </motion.div>
-                    ))}
+                <div className="flex justify-between items-center mb-4">
+                  <div>
+                    <h2 className="text-3xl font-black text-white flex items-center gap-3">
+                      <Database className="size-8 text-accent-pink" /> SQL 數據分析實驗室
+                    </h2>
+                    <p className="text-text-secondary mt-1 font-medium">直接對資料庫進行多維度查詢與對比分析</p>
                   </div>
-                  <div className="flex justify-between mt-6 text-[10px] text-text-secondary font-black tracking-widest">
-                    <span>MON</span><span>TUE</span><span>WED</span><span>THU</span><span>FRI</span><span>SAT</span><span>SUN</span>
+                  <div className="flex gap-4">
+                    <button 
+                      onClick={() => setShowComparison(!showComparison)}
+                      className={`px-6 py-2 rounded-xl transition-all font-bold flex items-center gap-2 border ${
+                        showComparison 
+                        ? 'bg-accent-pink/20 text-accent-pink border-accent-pink/30' 
+                        : 'bg-white/5 text-text-secondary border-white/10 hover:bg-white/10'
+                      }`}
+                    >
+                      {showComparison ? <MinusCircle className="size-4" /> : <PlusCircle className="size-4" />}
+                      {showComparison ? '關閉對比模式' : '開啟 SQL 對比'}
+                    </button>
                   </div>
                 </div>
-                
-                <div className="glass-card p-8 bg-gradient-to-br from-primary/10 to-transparent flex flex-col justify-center">
-                  <h3 className="text-xl font-bold mb-2">自動化效能指標</h3>
-                  <p className="text-sm text-text-secondary mb-8 font-medium">系統各節點穩定度與響應速度</p>
-                  <div className="space-y-6">
-                    {[
-                      { label: '內容偵測準確率', val: '99.2%', color: 'text-primary' },
-                      { label: '平均響應延遲', val: '84ms', color: 'text-accent-cyan' },
-                      { label: '訊息送達成功率', val: '100%', color: 'text-success' },
-                      { label: 'API 剩餘額度', val: '85%', color: 'text-accent-pink' }
-                    ].map(stat => (
-                      <div key={stat.label} className="flex justify-between items-center border-b border-white/5 pb-3">
-                        <span className="text-sm font-bold text-text-secondary">{stat.label}</span>
-                        <span className={`text-lg font-black font-mono ${stat.color}`}>{stat.val}</span>
+
+                <div className={`grid gap-6 ${showComparison ? 'grid-cols-1 lg:grid-cols-2' : 'grid-cols-1'}`}>
+                  {sqlQueries.slice(0, showComparison ? 2 : 1).map((q, idx) => (
+                    <div key={q.id} className="glass-card p-6 flex flex-col gap-4">
+                      <div className="flex justify-between items-center">
+                        <span className="text-xs font-black uppercase tracking-widest text-primary bg-primary/10 px-3 py-1 rounded-full">
+                          Query SQL {idx + 1}
+                        </span>
+                        <div className="flex gap-2">
+                          <button 
+                            onClick={() => runSqlQuery(idx)}
+                            disabled={q.loading}
+                            className={`flex items-center gap-2 px-4 py-1.5 rounded-lg font-bold text-sm transition-all ${
+                              q.loading ? 'bg-white/10 text-white/30' : 'bg-primary text-white hover:scale-105 active:scale-95 shadow-lg shadow-primary/20'
+                            }`}
+                          >
+                            {q.loading ? <RefreshCw className="size-4 animate-spin" /> : <Play className="size-4" />}
+                            執行查詢
+                          </button>
+                        </div>
                       </div>
-                    ))}
+                      
+                      <textarea
+                        value={q.query}
+                        onChange={(e) => {
+                          const newQ = [...sqlQueries];
+                          newQ[idx].query = e.target.value;
+                          setSqlQueries(newQ);
+                        }}
+                        className="w-full h-32 bg-black/40 border border-white/10 rounded-xl p-4 font-mono text-sm text-accent-cyan focus:border-primary/50 outline-none transition-all resize-none"
+                        placeholder="SELECT * FROM interaction_logs WHERE ..."
+                      />
+                    </div>
+                  ))}
+                </div>
+
+                {showComparison && sqlQueries[0].result && sqlQueries[1].result && (
+                  <div className="animate-fade-in grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div className="glass-card p-8 text-center border-t-4 border-primary">
+                      <p className="text-text-secondary text-xs font-black mb-2 uppercase">SQL 1</p>
+                      <h4 className="text-5xl font-black text-white">{sqlQueries[0].result.data.length}</h4>
+                    </div>
+                    <div className="flex items-center justify-center">
+                      <RefreshCw className="size-8 text-white/20" />
+                    </div>
+                    <div className="glass-card p-8 text-center border-t-4 border-accent-pink">
+                      <p className="text-text-secondary text-xs font-black mb-2 uppercase">SQL 2</p>
+                      <h4 className="text-5xl font-black text-white">{sqlQueries[1].result.data.length}</h4>
+                    </div>
+                  </div>
+                )}
+
+                <div className="space-y-8">
+                  {sqlQueries.slice(0, showComparison ? 2 : 1).map((q, idx) => (
+                    q.result && (
+                      <div key={`res-${idx}`} className="glass-card p-0 overflow-hidden border border-white/10">
+                        <div className="px-6 py-4 border-b border-white/5 bg-white/5 flex justify-between items-center">
+                          <h4 className="text-sm font-bold flex items-center gap-2">
+                            <Table className="size-4 text-primary" /> SQL {idx + 1} 資料結果 ({q.result.data.length} 筆)
+                          </h4>
+                        </div>
+                        <div className="overflow-x-auto max-h-[300px]">
+                          <table className="w-full text-left border-collapse">
+                            <thead className="sticky top-0 bg-secondary/80 backdrop-blur-md z-10">
+                              <tr>
+                                {q.result.cols.map(col => (
+                                  <th key={col} className="px-6 py-3 text-[10px] font-black text-text-secondary uppercase">{col}</th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {q.result.data.map((row, rIdx) => (
+                                <tr key={rIdx} className="border-b border-white/5 hover:bg-white/5 transition-colors">
+                                  {q.result.cols.map(col => (
+                                    <td key={col} className="px-6 py-3 text-sm font-medium text-white/80">{String(row[col])}</td>
+                                  ))}
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )
+                  ))}
+                </div>
+              </motion.div>
+            )}
+
+            {activeTab === 'onboarding' && (
+              <motion.div 
+                key="onboarding"
+                initial={{ opacity: 0, x: 20 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: -20 }}
+                className="space-y-8"
+              >
+                <div className="flex justify-between items-center">
+                  <div>
+                    <h2 className="text-3xl font-black text-white flex items-center gap-3">
+                      <BookOpen className="size-8 text-primary" /> 新手教學設定
+                    </h2>
+                    <p className="text-text-secondary mt-1 font-medium">設定新客戶第一次互動時的自動引導流程</p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                  <div className="lg:col-span-2 space-y-6">
+                    <div className="glass-card p-6">
+                      <div className="space-y-4">
+                        <textarea 
+                          value={newStepMsg}
+                          onChange={(e) => setNewStepMsg(e.target.value)}
+                          placeholder="輸入給新客戶的回覆內容..."
+                          className="w-full h-32 bg-black/40 border border-white/10 rounded-xl p-4 text-white outline-none resize-none"
+                        />
+                        <button 
+                          onClick={addOnboardingStep}
+                          className="w-full bg-primary hover:bg-primary/80 text-white px-8 py-3 rounded-xl font-black flex items-center justify-center gap-2"
+                        >
+                          <PlusCircle className="size-5" /> 加入新步驟
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="space-y-4">
+                      {onboardingSteps.map((step) => (
+                        <div key={step.id} className="glass-card p-6 flex flex-col gap-4 border-l-4 border-primary">
+                          <div className="flex justify-between items-center">
+                            <span className="text-xs font-black text-primary bg-primary/10 px-3 py-1 rounded-full">Step {step.step_index}</span>
+                            <button onClick={() => deleteOnboardingStep(step.id)} className="text-text-secondary hover:text-red-500"><MinusCircle className="size-4" /></button>
+                          </div>
+                          <p className="text-white font-medium whitespace-pre-wrap">{step.message}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="space-y-6">
+                    <div className="glass-card p-6 bg-gradient-to-br from-primary/10 to-transparent">
+                      <h3 className="text-lg font-bold mb-4 flex items-center gap-2"><Zap className="size-5 text-yellow-400" /> 自動抓取規則</h3>
+                      <div className="space-y-3">
+                        {['電子郵件', '手機號碼', '性別稱呼'].map(rule => (
+                          <div key={rule} className="bg-black/20 p-3 rounded-lg border border-white/5">
+                            <div className="text-xs font-black text-primary uppercase mb-1">{rule}</div>
+                            <div className="text-[10px] text-text-secondary">自動由 AI / Regex 進行辨識</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
                   </div>
                 </div>
               </motion.div>

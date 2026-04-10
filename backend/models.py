@@ -22,6 +22,7 @@ class Lead(Base):
     name = Column(String)
     status = Column(String, default="new")  # new, in-progress, completed
     meta_info = Column(JSON, default={})     # Custom data captured (phone, email, etc.)
+    onboarding_step = Column(Integer, default=0) # Index for onboarding process
     last_interaction = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -80,6 +81,14 @@ class BroadcastJob(Base):
 
     customer_list = relationship("CustomerList")
     template = relationship("MessageTemplate")
+
+class OnboardingStep(Base):
+    __tablename__ = "onboarding_steps"
+    id = Column(Integer, primary_key=True, index=True)
+    step_index = Column(Integer, unique=True, index=True) # 1, 2, 3...
+    message = Column(Text) # Text or Flex JSON
+    msg_type = Column(String, default="text") # 'text' or 'flex'
+    extraction_field = Column(String, nullable=True) # email, phone, gender, name
 
 # Create tables
 def init_db():
