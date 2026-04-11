@@ -32,10 +32,40 @@ import {
   UserPlus,
   BrainCircuit,
   User,
-  Mail
+  Mail,
+  ChevronDown,
+  Check
 } from 'lucide-react';
+
 import axios from 'axios';
 import { motion, AnimatePresence } from 'framer-motion';
+
+// --- UI Helper Components ---
+const SkeletonLead = () => (
+  <div className="w-full p-4 rounded-2xl border border-white/5 animate-skeleton flex items-center gap-3">
+    <div className="size-10 rounded-lg bg-white/5" />
+    <div className="flex-1 space-y-2">
+      <div className="h-4 bg-white/5 rounded w-3/4" />
+      <div className="h-3 bg-white/5 rounded w-1/2" />
+    </div>
+  </div>
+);
+
+const EmptyState = ({ icon: Icon, title, message, action }) => (
+  <motion.div 
+    initial={{ opacity: 0, scale: 0.9 }}
+    animate={{ opacity: 1, scale: 1 }}
+    className="flex flex-col items-center justify-center p-12 text-center"
+  >
+    <div className="p-6 rounded-full bg-white/5 mb-6">
+      <Icon className="size-12 text-primary opacity-20" />
+    </div>
+    <h3 className="text-xl font-bold mb-2">{title}</h3>
+    <p className="text-text-secondary text-sm max-w-xs mb-6">{message}</p>
+    {action}
+  </motion.div>
+);
+
 
 // 從 .env 讀取後端設定，若無則自動偵測當前 IP
 const apiHost = import.meta.env.VITE_API_HOST || window.location.hostname;
@@ -50,6 +80,7 @@ function App() {
   const [tasks, setTasks] = useState([]);
   const [activeTab, setActiveTab] = useState(localStorage.getItem('activeTab') || 'dashboard'); // dashboard, leads, customers, analytics
   const [isConnected, setIsConnected] = useState(false);
+  const [isLoadingLeads, setIsLoadingLeads] = useState(true);
   
   // 客戶管理相關狀態
   const [selectedLead, setSelectedLead] = useState(null);
@@ -65,6 +96,10 @@ function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [editingName, setEditingName] = useState(false);
   const [newName, setNewName] = useState('');
+  const [quickReplyMsg, setQuickReplyMsg] = useState('');
+  const [isSendingReply, setIsSendingReply] = useState(false);
+  const [showScrollBottom, setShowScrollBottom] = useState(false);
+
   
   // -- Broadcast State --
   const [broadcastTemplates, setBroadcastTemplates] = useState({});
@@ -88,10 +123,12 @@ function App() {
   const [newStepMsg, setNewStepMsg] = useState('');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [leadAIContext, setLeadAIContext] = useState(null);
+  const [broadcastJobs, setBroadcastJobs] = useState([]);
   
   const logEndRef = useRef(null);
 
-  const fetchData = async () => {
+  const fetchData = async (showLoading = false) => {
+    if (showLoading) setIsLoadingLeads(true);
     try {
       const [leadsRes, tasksRes, listsRes] = await Promise.all([
         axios.get(`${API_BASE}/leads`),
@@ -105,11 +142,16 @@ function App() {
     } catch (error) {
       console.error("Fetch Error:", error);
       setIsConnected(false);
+      showNotification("無法連接到伺服器", "error");
+    } finally {
+      setIsLoadingLeads(false);
     }
   };
+
   
   useEffect(() => {
-    fetchData();
+    fetchData(true);
+
     let ws;
     
     const connectWS = () => {
@@ -146,8 +188,17 @@ function App() {
   }, []);
   
   useEffect(() => {
-    logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [logs]);
+    if (logEndRef.current) {
+      logEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [logs, leadLogs]);
+
+  const handleScroll = (e) => {
+    const { scrollTop, scrollHeight, clientHeight } = e.currentTarget;
+    const isAtBottom = scrollHeight - scrollTop - clientHeight < 50;
+    setShowScrollBottom(!isAtBottom);
+  };
+
 
   useEffect(() => {
     localStorage.setItem('activeTab', activeTab);
@@ -232,6 +283,27 @@ function App() {
     }
   };
 
+  const sendQuickReply = async () => {
+    if (!selectedLead || !quickReplyMsg.trim()) return;
+    setIsSendingReply(true);
+    try {
+      await axios.post(`${API_BASE}/api/message/send`, {
+        uid: selectedLead.line_uid || selectedLead.platform_id,
+        message: quickReplyMsg,
+        source: selectedLead.source || 'line'
+      });
+      showNotification("訊息已發送", "success");
+      setQuickReplyMsg('');
+      // Optimistically add to logs or wait for WS
+      fetchLeadDetails(selectedLead);
+    } catch (error) {
+      showNotification("發送失敗", "error");
+    } finally {
+      setIsSendingReply(false);
+    }
+  };
+
+
   // -- Broadcast Functions --
   const fetchTemplates = async () => {
     try {
@@ -273,8 +345,28 @@ function App() {
       
       await axios.post(`${API_BASE}/broadcast/send`, payload);
       showNotification(isScheduled ? "已成功預約發送" : "發送程序已啟動", "success");
+      if (isScheduled) fetchBroadcastJobs();
     } catch (err) {
       showNotification("執行失敗", "error");
+    }
+  };
+
+  const fetchBroadcastJobs = async () => {
+    try {
+      const res = await axios.get(`${API_BASE}/broadcast/jobs`);
+      setBroadcastJobs(res.data);
+    } catch (err) {
+      console.error("Error fetching broadcast jobs", err);
+    }
+  };
+
+  const cancelBroadcastJob = async (jobId) => {
+    try {
+      await axios.delete(`${API_BASE}/broadcast/jobs/${jobId}`);
+      showNotification("預約已取消", "success");
+      fetchBroadcastJobs();
+    } catch (err) {
+      showNotification("取消失敗", "error");
     }
   };
 
@@ -395,6 +487,7 @@ function App() {
   useEffect(() => {
     fetchTemplates();
     fetchOnboardingSteps();
+    if (activeTab === 'broadcast') fetchBroadcastJobs();
   }, [activeTab]);
 
   useEffect(() => {
@@ -449,7 +542,8 @@ function App() {
           {[
             { id: 'dashboard', label: '控制儀表板' },
             { id: 'leads', label: '線索管理' },
-            { id: 'customers', label: '客戶名單管理' },
+            { id: 'customers', label: '客戶名單' },
+            { id: 'broadcast', label: '訊息投放' },
             { id: 'analytics', label: '數據分析' },
             { id: 'onboarding', label: '新手教學設定' }
           ].map(tab => (
@@ -603,13 +697,20 @@ function App() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-glass-border">
-                      {leads.filter(l => 
+                      {isLoadingLeads ? (
+                        [...Array(5)].map((_, i) => (
+                          <tr key={i}>
+                            <td colSpan="5" className="px-8 py-4"><SkeletonLead /></td>
+                          </tr>
+                        ))
+                      ) : leads.filter(l => 
                         platformFilter === 'all' || 
                         (l.source && l.source.toLowerCase() === platformFilter.toLowerCase())
                       ).length > 0 ? leads.filter(l => 
                         platformFilter === 'all' || 
                         (l.source && l.source.toLowerCase() === platformFilter.toLowerCase())
                       ).map((lead, i) => (
+
                         <motion.tr 
                           key={lead.id} 
                           initial={{ opacity: 0, y: 10 }}
@@ -692,8 +793,8 @@ function App() {
                 exit={{ opacity: 0, x: -20 }}
                 className="grid grid-cols-1 lg:grid-cols-12 gap-6"
               >
-                {/* Left: Lead Selector (3 cols) */}
-                <div className="lg:col-span-3 glass rounded-3xl overflow-hidden border border-glass-border flex flex-col h-[calc(100vh-280px)]">
+                {/* Left: Lead Selector (4 cols) */}
+                <div className="lg:col-span-4 glass rounded-3xl overflow-hidden border border-glass-border flex flex-col h-[calc(100vh-280px)]">
                   <div className="p-6 border-b border-glass-border bg-white/5">
                     <div className="flex justify-between items-center mb-4">
                       <h3 className="text-xl font-bold flex items-center gap-2">
@@ -778,8 +879,8 @@ function App() {
                   </div>
                 </div>
 
-                {/* Middle: Conversation Logs & List Management (5 cols) */}
-                <div className="lg:col-span-5 flex flex-col gap-6">
+                {/* Middle: Conversation Logs & List Management (8 cols) */}
+                <div className="lg:col-span-8 flex flex-col gap-6">
                   <div className="glass rounded-3xl overflow-hidden border border-glass-border flex flex-col h-[600px] shadow-2xl relative">
                     
                     {/* Enhanced Chat Header */}
@@ -1000,31 +1101,47 @@ function App() {
                   </div>
                 </div>
 
-                {/* Right: Message Broadcast Panel (4 cols) */}
-                <div className="lg:col-span-4 flex flex-col gap-6">
-                  <div className="glass rounded-3xl p-6 border border-glass-border h-full flex flex-col">
-                    <div className="flex justify-between items-center mb-6">
-                      <h3 className="text-xl font-bold flex items-center gap-2">
-                        <Zap className="size-5 text-accent-yellow" /> LINE 訊息投放
-                      </h3>
+              </motion.div>
+            )}
+
+            {activeTab === 'broadcast' && (
+              <motion.div 
+                key="broadcast"
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.95 }}
+                className="max-w-4xl mx-auto"
+              >
+                {/* Right: Message Broadcast Panel (Now Main Context) */}
+                <div className="flex flex-col gap-6">
+                  <div className="glass rounded-3xl p-8 border border-glass-border shadow-2xl h-full flex flex-col">
+                    <div className="flex justify-between items-center mb-8">
+                      <div>
+                        <h3 className="text-2xl font-bold flex items-center gap-3">
+                          <Zap className="size-6 text-accent-yellow" /> 訊息投放系統
+                        </h3>
+                        <p className="text-text-secondary text-sm mt-1">
+                          統一管理 LINE Flex 與 Gmail 商務郵件投放
+                        </p>
+                      </div>
                       <div className="flex gap-2">
-                        <button onClick={exportTemplate} title="匯出備份" className="p-2 hover:bg-white/5 rounded-lg transition-colors">
-                          <Download className="size-4" />
+                        <button onClick={exportTemplate} title="匯出備份" className="p-3 bg-white/5 hover:bg-white/10 rounded-xl transition-colors">
+                          <Download className="size-5" />
                         </button>
-                        <label className="p-2 hover:bg-white/5 rounded-lg transition-colors cursor-pointer">
-                          <Upload className="size-4" />
+                        <label className="p-3 bg-white/5 hover:bg-white/10 rounded-xl transition-colors cursor-pointer">
+                          <Upload className="size-5" />
                           <input type="file" onChange={importTemplate} className="hidden" accept=".json" />
                         </label>
                       </div>
                     </div>
 
                     {/* Slot Picker */}
-                    <div className="flex justify-between mb-6 p-1 bg-black/20 rounded-xl">
+                    <div className="flex justify-between mb-8 p-1.5 bg-black/20 rounded-2xl">
                       {[1,2,3,4,5,6,7,8,9].map(i => (
                         <button
                           key={i}
                           onClick={() => setCurrentSlot(i)}
-                          className={`flex-1 py-2 text-sm font-bold rounded-lg transition-all ${
+                          className={`flex-1 py-3 text-sm font-bold rounded-xl transition-all ${
                             currentSlot === i ? 'bg-primary text-white shadow-lg' : 'hover:bg-white/5 text-text-secondary'
                           }`}
                         >
@@ -1033,76 +1150,164 @@ function App() {
                       ))}
                     </div>
 
-                    <div className="flex-1 flex flex-col gap-4 min-h-0">
-                      <input 
-                        type="text"
-                        placeholder="給這個範本取個名字 (例如: 春季活動)"
-                        value={editorName}
-                        onChange={(e) => setEditorName(e.target.value)}
-                        className="bg-white/5 border border-glass-border rounded-xl px-4 py-2 text-sm focus:outline-none"
-                      />
+                    <div className="flex-1 flex flex-col gap-6 min-h-0">
+                      <div className="space-y-2">
+                        <p className="text-[10px] font-bold text-text-secondary uppercase px-1 tracking-widest">範本名稱</p>
+                        <input 
+                          type="text"
+                          placeholder="例如: 2024 春季限時活動通知"
+                          value={editorName}
+                          onChange={(e) => setEditorName(e.target.value)}
+                          className="w-full bg-white/5 border border-glass-border rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 transition-all font-bold"
+                        />
+                      </div>
                       
-                      <div className="flex gap-2 p-1 bg-white/5 rounded-xl">
-                        <button 
-                          onClick={() => setEditorType('text')}
-                          className={`flex-1 py-1 text-xs rounded-lg ${editorType === 'text' ? 'bg-white/10 font-bold' : 'text-text-secondary'}`}
-                        >純文字</button>
-                        <button 
-                          onClick={() => setEditorType('flex')}
-                          className={`flex-1 py-1 text-xs rounded-lg ${editorType === 'flex' ? 'bg-white/10 font-bold' : 'text-text-secondary'}`}
-                        >Flex 氣泡框</button>
+                      <div className="space-y-2">
+                        <p className="text-[10px] font-bold text-text-secondary uppercase px-1 tracking-widest">訊息類型</p>
+                        <div className="flex gap-2 p-1.5 bg-white/5 rounded-2xl">
+                          <button 
+                            onClick={() => setEditorType('text')}
+                            className={`flex-1 py-2 text-xs rounded-xl transition-all ${editorType === 'text' ? 'bg-primary/20 text-primary font-bold shadow-inner' : 'text-text-secondary hover:text-white'}`}
+                          >純文字 (LINE / Gmail)</button>
+                          <button 
+                            onClick={() => setEditorType('flex')}
+                            className={`flex-1 py-2 text-xs rounded-xl transition-all ${editorType === 'flex' ? 'bg-primary/20 text-primary font-bold shadow-inner' : 'text-text-secondary hover:text-white'}`}
+                          >Flex 氣泡框 (僅限 LINE)</button>
+                        </div>
                       </div>
 
-                      <textarea 
-                        className="flex-1 w-full bg-black/30 border border-glass-border rounded-2xl p-4 text-xs font-mono focus:outline-none resize-none"
-                        placeholder={editorType === 'text' ? "輸入訊息內容..." : "請貼入 LINE Flex Message JSON..."}
-                        value={editorContent}
-                        onChange={(e) => setEditorContent(e.target.value)}
-                      />
+                      <div className="flex-1 min-h-[300px] flex flex-col space-y-2">
+                         <p className="text-[10px] font-bold text-text-secondary uppercase px-1 tracking-widest">訊息內容 / JSON</p>
+                         <textarea 
+                          className="flex-1 w-full bg-black/40 border border-glass-border rounded-2xl p-6 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/40 transition-all resize-none shadow-inner leading-relaxed"
+                          placeholder={editorType === 'text' ? "在這裡輸入要發送的文字內容..." : "請在這裡貼入 LINE Bot Designer 產生的 Flex Message JSON 代碼..."}
+                          value={editorContent}
+                          onChange={(e) => setEditorContent(e.target.value)}
+                        />
+                      </div>
                       
                       <button 
                         onClick={saveCurrentTemplate}
-                        className="w-full py-3 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl text-sm font-bold transition-all mb-4"
-                      >儲存目前分頁內容</button>
+                        className="w-full py-4 bg-white/5 hover:bg-white/10 border border-white/10 rounded-2xl text-sm font-black transition-all shadow-lg flex items-center justify-center gap-2 group"
+                      >
+                        <CheckCircle className="size-4 text-success opacity-0 group-hover:opacity-100 transition-opacity" />
+                        儲存範本至 Slot {currentSlot}
+                      </button>
 
-                      <div className="space-y-4 pt-4 border-t border-white/5">
-                        <div>
-                          <p className="text-[10px] font-bold text-text-secondary uppercase mb-2">選擇目標名單</p>
-                          <select 
-                            value={targetListId}
-                            onChange={(e) => setTargetListId(e.target.value)}
-                            className="w-full bg-white/5 border border-glass-border rounded-xl px-4 py-2 text-sm focus:outline-none"
-                          >
-                            <option value="">-- 選擇名單 --</option>
-                            {availableLists.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
-                          </select>
+                      <div className="p-8 bg-primary/5 rounded-3xl border border-primary/10 space-y-6 mt-4">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                          <div>
+                            <p className="text-[10px] font-black text-primary uppercase mb-3 tracking-widest">1. 選擇名單</p>
+                            <select 
+                              value={targetListId}
+                              onChange={(e) => setTargetListId(e.target.value)}
+                              className="w-full bg-black/40 border border-glass-border rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 transition-all font-bold"
+                            >
+                              <option value="">-- 請選擇欲投放的名單 --</option>
+                              {availableLists.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
+                            </select>
+                          </div>
+                          
+                          <div>
+                            <p className="text-[10px] font-black text-accent-cyan uppercase mb-3 tracking-widest">2. 預約時間 (選填)</p>
+                            <input 
+                              type="datetime-local" 
+                              value={scheduledTime}
+                              onChange={(e) => setScheduledTime(e.target.value)}
+                              className="w-full bg-black/40 border border-glass-border rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 transition-all text-white"
+                            />
+                          </div>
                         </div>
-                        
-                        <div>
-                          <p className="text-[10px] font-bold text-text-secondary uppercase mb-2">預約發送 (選填)</p>
-                          <input 
-                            type="datetime-local" 
-                            value={scheduledTime}
-                            onChange={(e) => setScheduledTime(e.target.value)}
-                            className="w-full bg-white/5 border border-glass-border rounded-xl px-4 py-2 text-sm focus:outline-none"
-                          />
-                        </div>
-                        <div className="grid grid-cols-2 gap-4">
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
                           <button 
                             onClick={() => handleBroadcast(false)}
-                            className="py-3 bg-primary hover:scale-[1.02] active:scale-[0.98] rounded-xl text-sm font-bold transition-all flex items-center justify-center gap-2"
+                            className="py-4 bg-primary hover:bg-primary/80 hover:shadow-xl hover:shadow-primary/20 active:scale-[0.98] rounded-2xl text-base font-black transition-all flex items-center justify-center gap-3 text-white"
                           >
-                            <Send className="size-4" /> 立即發送
+                            <Send className="size-5" /> 立即執行投放
                           </button>
                           <button 
                             onClick={() => handleBroadcast(true)}
-                            className="py-3 bg-white/10 hover:bg-white/20 rounded-xl text-sm font-bold transition-all flex items-center justify-center gap-2"
+                            className="py-4 bg-white/5 hover:bg-white/10 rounded-2xl text-base font-black transition-all flex items-center justify-center gap-3 border border-white/10"
                           >
-                            <Clock className="size-4" /> 預約排程
+                            <Clock className="size-5" /> 預約自動發送
                           </button>
+                        </div>
+                        
+                        <div className="flex items-center justify-center gap-2 text-[10px] text-text-secondary opacity-50 uppercase tracking-tighter">
+                          <AlertCircle className="size-3" /> 系統將自動根據名單內的客戶來源切換 LINE 或 Gmail
                         </div>
                       </div>
                     </div>
+                  </div>
+
+                  {/* Scheduled Jobs Management */}
+                  <div className="glass rounded-3xl p-8 border border-glass-border shadow-2xl">
+                    <div className="flex justify-between items-center mb-6">
+                      <h3 className="text-xl font-bold flex items-center gap-2">
+                        <Clock className="size-5 text-accent-cyan" /> 預約排程管理
+                      </h3>
+                      <button 
+                        onClick={fetchBroadcastJobs}
+                        className="p-2 hover:bg-white/5 rounded-lg transition-colors text-text-secondary"
+                      >
+                        <RefreshCw className="size-4" />
+                      </button>
+                    </div>
+
+                    {broadcastJobs.length > 0 ? (
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left">
+                          <thead>
+                            <tr className="text-[10px] text-text-secondary uppercase tracking-widest border-b border-white/5">
+                              <th className="px-4 py-3 pb-4">發送範本</th>
+                              <th className="px-4 py-3 pb-4">目標名單</th>
+                              <th className="px-4 py-3 pb-4">預定時間</th>
+                              <th className="px-4 py-3 pb-4 text-right">操作</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-white/5">
+                            {broadcastJobs.map(job => (
+                              <tr key={job.id} className="group hover:bg-white/5 transition-colors">
+                                <td className="px-4 py-4">
+                                  <div className="text-sm font-bold text-white">{job.template_name}</div>
+                                  <div className="mt-1 flex gap-2">
+                                    {job.status === 'pending' && <span className="text-[9px] px-1.5 py-0.5 bg-accent-yellow/10 text-accent-yellow border border-accent-yellow/20 rounded font-black uppercase">Waiting</span>}
+                                    {job.status === 'success' && <span className="text-[9px] px-1.5 py-0.5 bg-success/10 text-success border border-success/20 rounded font-black uppercase">Completed</span>}
+                                    {job.status.startsWith('error') && <span className="text-[9px] px-1.5 py-0.5 bg-error/10 text-error border border-error/20 rounded font-black uppercase">Failed</span>}
+                                  </div>
+                                </td>
+                                <td className="px-4 py-4">
+                                  <span className="px-3 py-1 bg-primary/10 text-primary rounded-lg text-xs font-bold border border-primary/20">
+                                    {job.list_name}
+                                  </span>
+                                </td>
+                                <td className="px-4 py-4">
+                                  <div className="text-xs font-mono text-text-secondary">
+                                    {new Date(job.scheduled_at).toLocaleString()}
+                                  </div>
+                                </td>
+                                <td className="px-4 py-4 text-right">
+                                  {job.status === 'pending' && (
+                                    <button 
+                                      onClick={() => cancelBroadcastJob(job.id)}
+                                      className="px-4 py-2 bg-error/10 hover:bg-error/20 text-error text-[10px] font-black uppercase rounded-lg border border-error/20 transition-all opacity-0 group-hover:opacity-100"
+                                    >
+                                      取消排程
+                                    </button>
+                                  )}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : (
+                      <div className="py-12 flex flex-col items-center justify-center text-text-secondary opacity-30 italic bg-black/10 rounded-2xl border border-dashed border-white/10">
+                        <Clock className="size-10 mb-4" />
+                        <p className="text-sm">目前沒有任何等待發送的預約任務</p>
+                      </div>
+                    )}
                   </div>
                 </div>
               </motion.div>

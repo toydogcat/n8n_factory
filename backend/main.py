@@ -334,6 +334,32 @@ async def send_gmail(mail: GmailSendRequest, db: Session = Depends(get_db)):
         logger.error(f"Gmail Send Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+# --- Direct Messaging ---
+
+class MessageSendRequest(BaseModel):
+    uid: str
+    message: str
+    source: Optional[str] = "line"
+    msg_type: Optional[str] = "text"
+
+@app.post("/api/message/send")
+async def send_direct_message(req: MessageSendRequest, db: Session = Depends(get_db)):
+    """Sends a direct message to a user via n8n SENDER."""
+    try:
+        payload = {
+            "uid": req.uid,
+            "message": req.message,
+            "type": req.msg_type
+        }
+        await log_event("DIRECT_MSG_OUT", payload, db, entity_id=req.uid, source=req.source)
+        # Trigger n8n SENDER workflow
+        result = await n8n.trigger_workflow("SENDER", payload)
+        return {"status": "success", "n8n_response": result}
+    except Exception as e:
+        logger.error(f"Direct Send Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # --- Lead Management (Scenario 5) ---
 
 @app.get("/leads", response_model=List[LeadResponse])
@@ -533,6 +559,39 @@ async def broadcast_message(br: BroadcastRequest, background_tasks: BackgroundTa
         background_tasks.add_task(process_broadcast, br.list_id, template.content, template.msg_type)
         return {"status": "sending_started"}
 
+@app.get("/broadcast/jobs")
+async def get_broadcast_jobs(db: Session = Depends(get_db)):
+    """Fetch all pending broadcast jobs and the 10 most recent completed/failed ones."""
+    pending_jobs = db.query(BroadcastJob).filter(BroadcastJob.status == "pending").order_by(BroadcastJob.scheduled_at.asc()).all()
+    recent_jobs = db.query(BroadcastJob).filter(BroadcastJob.status != "pending").order_by(BroadcastJob.scheduled_at.desc()).limit(10).all()
+    
+    all_jobs = pending_jobs + recent_jobs
+    
+    result = []
+    for job in all_jobs:
+        result.append({
+            "id": job.id,
+            "list_name": job.customer_list.name if job.customer_list else "未知名單",
+            "template_name": job.template.name if job.template else f"範本 {job.template_id}",
+            "scheduled_at": job.scheduled_at,
+            "status": job.status
+        })
+    return result
+
+@app.delete("/broadcast/jobs/{job_id}")
+async def cancel_broadcast_job(job_id: int, db: Session = Depends(get_db)):
+    """Cancel a pending broadcast job."""
+    job = db.query(BroadcastJob).filter(BroadcastJob.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    if job.status != "pending":
+        raise HTTPException(status_code=400, detail="只有等待中的任務可以被取消")
+    
+    db.delete(job)
+    db.commit()
+    return {"status": "success"}
+
 async def process_broadcast(list_id: int, content: str, msg_type: str):
     """Worker function to send messages to n8n one by one."""
     # We need a new session for background tasks
@@ -543,20 +602,28 @@ async def process_broadcast(list_id: int, content: str, msg_type: str):
         
         for lead in leads:
             try:
-                # Payload for n8n SENDER
-                payload = {
-                    "uid": lead.line_uid,
-                    "message": content,
-                    "type": msg_type
-                }
-                # Trigger internal sender workflow (Assuming 'SENDER' is a workflow ID or we use a specific webhook)
-                # In this project, we might have a specific n8n workflow for this. 
-                # Let's target a generic 'broadcast' trigger if available, or just use n8n.trigger_workflow
-                await n8n.trigger_workflow("SENDER", payload) 
-                
-                await log_event("BROADCAST_SENT", {"uid": lead.line_uid, "type": msg_type}, db)
+                if lead.source == "gmail":
+                    recipient = lead.platform_id
+                    # n8n GMAIL_SENDER expects to, subject, message
+                    payload = {
+                        "to": recipient,
+                        "subject": f"[廣播] 自動化訊息",
+                        "message": content
+                    }
+                    await n8n.trigger_workflow("GMAIL_SENDER", payload)
+                    await log_event("BROADCAST_SENT", {"recipient": recipient, "source": "gmail"}, db, entity_id=recipient, source="gmail")
+                else:
+                    # Default: LINE
+                    uid = lead.line_uid or lead.platform_id
+                    payload = {
+                        "uid": uid,
+                        "message": content,
+                        "type": msg_type
+                    }
+                    await n8n.trigger_workflow("SENDER", payload)
+                    await log_event("BROADCAST_SENT", {"uid": uid, "source": "line", "type": msg_type}, db, entity_id=uid, source="line")
             except Exception as e:
-                logger.error(f"Failed to send to {lead.line_uid}: {e}")
+                logger.error(f"Failed to send broadcast to {lead.id}: {e}")
         
     finally:
         db.close()
