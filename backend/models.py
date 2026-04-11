@@ -28,6 +28,8 @@ class Lead(Base):
     last_interaction = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+    lists = relationship("CustomerList", secondary="lead_list_associations", backref="leads")
+
 class AutomatonTask(Base):
     __tablename__ = "tasks"
 

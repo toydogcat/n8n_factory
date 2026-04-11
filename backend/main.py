@@ -37,6 +37,7 @@ class LeadResponse(BaseModel):
     meta_info: Dict[str, Any]
     last_interaction: Optional[datetime]
     created_at: datetime
+    list_ids: List[int] = []
 
     class Config:
         from_attributes = True
@@ -365,7 +366,11 @@ async def send_direct_message(req: MessageSendRequest, db: Session = Depends(get
 @app.get("/leads", response_model=List[LeadResponse])
 async def get_leads(db: Session = Depends(get_db)):
     """Fetch all leads for the dashboard."""
-    return db.query(Lead).order_by(Lead.last_interaction.desc()).all()
+    leads = db.query(Lead).order_by(Lead.last_interaction.desc()).all()
+    # Populate list_ids manually to avoid complex join issues in simple models
+    for lead in leads:
+        lead.list_ids = [l.id for l in lead.lists]
+    return leads
 
 @app.patch("/leads/{lead_id}")
 async def update_lead(lead_id: int, update_data: Dict[str, Any], db: Session = Depends(get_db)):

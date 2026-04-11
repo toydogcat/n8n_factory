@@ -34,7 +34,9 @@ import {
   User,
   Mail,
   ChevronDown,
-  Check
+  Check,
+  Plus,
+  Trash2
 } from 'lucide-react';
 
 import axios from 'axios';
@@ -90,6 +92,7 @@ function App() {
   const [currentLeadLists, setCurrentLeadLists] = useState([]);
   const [newListName, setNewListName] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
+  const [leadListFilter, setLeadListFilter] = useState('all');
   
   // CRM 2.0 新增狀態
   const [msgSearchQuery, setMsgSearchQuery] = useState('');
@@ -99,6 +102,7 @@ function App() {
   const [quickReplyMsg, setQuickReplyMsg] = useState('');
   const [isSendingReply, setIsSendingReply] = useState(false);
   const [showScrollBottom, setShowScrollBottom] = useState(false);
+  const [showLogs, setShowLogs] = useState(true);
 
   
   // -- Broadcast State --
@@ -545,7 +549,7 @@ function App() {
             { id: 'customers', label: '客戶名單' },
             { id: 'broadcast', label: '訊息投放' },
             { id: 'analytics', label: '數據分析' },
-            { id: 'onboarding', label: '新手教學設定' }
+            { id: 'onboarding', label: '新客引導' }
           ].map(tab => (
             <button 
               key={tab.id}
@@ -559,12 +563,22 @@ function App() {
               {tab.label}
             </button>
           ))}
+          <button 
+            onClick={() => setShowLogs(!showLogs)}
+            className={`px-4 py-2 rounded-xl text-sm font-semibold transition-all duration-300 border border-glass-border flex items-center gap-2 ${
+              showLogs ? 'bg-primary/20 text-primary border-primary/30' : 'text-text-secondary hover:text-white hover:bg-white/5'
+            }`}
+            title={showLogs ? "隱藏日誌" : "顯示日誌"}
+          >
+            <Terminal className="size-4" />
+            <span className="hidden md:inline">{showLogs ? '日誌開啟' : '日誌關閉'}</span>
+          </button>
         </nav>
       </header>
       
-      <main className="grid grid-cols-1 lg:grid-cols-4 gap-8">
+      <main className={`grid grid-cols-1 ${showLogs ? 'lg:grid-cols-4' : 'lg:grid-cols-1'} gap-8 transition-all duration-500`}>
         {/* Main Content Area / 主要內容 */}
-        <section className="lg:col-span-3 space-y-8">
+        <section className={`${showLogs ? 'lg:col-span-3' : 'lg:col-span-1'} space-y-8`}>
           
           <AnimatePresence mode="wait">
             {activeTab === 'dashboard' && (
@@ -676,13 +690,30 @@ function App() {
                       ))}
                     </div>
                   </div>
-                  <div className="relative w-full md:w-auto">
-                    <Search className="size-4 absolute left-4 top-1/2 -translate-y-1/2 text-text-secondary" />
-                    <input 
-                      type="text" 
-                      placeholder="搜尋線索..." 
-                      className="bg-white/5 border border-glass-border rounded-xl pl-11 pr-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 w-full md:w-80"
-                    />
+                  <div className="flex flex-col md:flex-row gap-4 items-center w-full md:w-auto">
+                    <div className="relative">
+                      <Table className="size-4 absolute left-3 top-1/2 -translate-y-1/2 text-text-secondary" />
+                      <select 
+                        value={leadListFilter}
+                        onChange={(e) => setLeadListFilter(e.target.value)}
+                        className="bg-black/40 border border-glass-border rounded-xl pl-10 pr-4 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary/40 appearance-none min-w-[140px]"
+                      >
+                        <option value="all">所有名單</option>
+                        {availableLists.map(list => (
+                          <option key={list.id} value={list.id}>{list.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="relative w-full md:w-auto">
+                      <Search className="size-4 absolute left-4 top-1/2 -translate-y-1/2 text-text-secondary" />
+                      <input 
+                        type="text" 
+                        placeholder="搜尋線索..." 
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        className="bg-white/5 border border-glass-border rounded-xl pl-11 pr-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 w-full md:w-80"
+                      />
+                    </div>
                   </div>
                 </div>
                 <div className="overflow-x-auto">
@@ -703,13 +734,21 @@ function App() {
                             <td colSpan="5" className="px-8 py-4"><SkeletonLead /></td>
                           </tr>
                         ))
-                      ) : leads.filter(l => 
-                        platformFilter === 'all' || 
-                        (l.source && l.source.toLowerCase() === platformFilter.toLowerCase())
-                      ).length > 0 ? leads.filter(l => 
-                        platformFilter === 'all' || 
-                        (l.source && l.source.toLowerCase() === platformFilter.toLowerCase())
-                      ).map((lead, i) => (
+                      ) : leads.filter(l => {
+                        const matchesPlatform = platformFilter === 'all' || (l.source && l.source.toLowerCase() === platformFilter.toLowerCase());
+                        const matchesSearch = (l.name || '').toLowerCase().includes(searchQuery.toLowerCase()) || 
+                                            (l.line_uid || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+                                            (l.platform_id || '').toLowerCase().includes(searchQuery.toLowerCase());
+                        const matchesList = leadListFilter === 'all' || (l.list_ids && l.list_ids.includes(parseInt(leadListFilter)));
+                        return matchesPlatform && matchesSearch && matchesList;
+                      }).length > 0 ? leads.filter(l => {
+                        const matchesPlatform = platformFilter === 'all' || (l.source && l.source.toLowerCase() === platformFilter.toLowerCase());
+                        const matchesSearch = (l.name || '').toLowerCase().includes(searchQuery.toLowerCase()) || 
+                                            (l.line_uid || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+                                            (l.platform_id || '').toLowerCase().includes(searchQuery.toLowerCase());
+                        const matchesList = leadListFilter === 'all' || (l.list_ids && l.list_ids.includes(parseInt(leadListFilter)));
+                        return matchesPlatform && matchesSearch && matchesList;
+                      }).map((lead, i) => (
 
                         <motion.tr 
                           key={lead.id} 
@@ -763,11 +802,18 @@ function App() {
                             <button 
                               onClick={() => handleAIRecovery(lead.id)}
                               className="p-2 hover:bg-accent-cyan/20 rounded-lg transition-all text-text-secondary hover:text-accent-cyan"
-                              title="AI 語意恢復"
+                              title="AI 語意恢復：自動從對話中分析並補齊遺漏的聯絡資訊"
                             >
                               <BrainCircuit className="size-5" />
                             </button>
-                            <button className="p-2 hover:bg-primary/20 rounded-lg transition-all text-text-secondary hover:text-primary">
+                            <button 
+                              onClick={() => {
+                                setActiveTab('customers');
+                                fetchLeadDetails(lead);
+                              }}
+                              className="p-2 hover:bg-primary/20 rounded-lg transition-all text-text-secondary hover:text-primary"
+                              title="直接查看商務對話 (CRM)：切換至客戶名單分頁並開始對話"
+                            >
                               <ExternalLink className="size-5" />
                             </button>
                           </td>
@@ -1061,9 +1107,27 @@ function App() {
                   </div>
 
                   <div className="glass rounded-3xl p-6 border border-glass-border shadow-xl">
-                    <h3 className="text-lg font-bold flex items-center gap-2 mb-5">
-                      <Settings className="size-5 text-accent-pink" /> 快速標籤清單
-                    </h3>
+                    <div className="flex items-center justify-between mb-5">
+                      <h3 className="text-lg font-bold flex items-center gap-2">
+                        <Settings className="size-5 text-accent-pink" /> 快速標籤清單
+                      </h3>
+                      <div className="flex gap-2 items-center">
+                        <input 
+                          placeholder="新名單名稱..."
+                          value={newListName}
+                          onChange={(e) => setNewListName(e.target.value)}
+                          onKeyDown={(e) => e.key === 'Enter' && createNewList()}
+                          className="w-32 bg-black/40 border border-white/10 rounded-xl px-3 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-primary/40"
+                        />
+                        <button 
+                          onClick={createNewList}
+                          className="p-1.5 bg-primary/20 text-primary rounded-xl border border-primary/30 hover:bg-primary hover:text-white transition-all shadow-lg shadow-primary/20"
+                          title="建立新名單"
+                        >
+                          <Plus className="size-4" />
+                        </button>
+                      </div>
+                    </div>
                     <div className="space-y-6">
                       <div className="p-4 bg-white/5 rounded-2xl border border-white/5">
                         <p className="text-[10px] font-black text-primary uppercase mb-3 tracking-widest">已分配的名單組</p>
@@ -1084,17 +1148,37 @@ function App() {
                         </div>
                       </div>
                       <div>
-                        <p className="text-[10px] font-black text-text-secondary uppercase mb-3 tracking-widest">推薦名單轉移</p>
+                        <p className="text-[10px] font-black text-text-secondary uppercase mb-3 tracking-widest">名單轉移與管理</p>
                         <div className="flex flex-wrap gap-2">
-                          {selectedLead && availableLists.filter(l => !currentLeadLists.some(cl => cl.id === l.id)).map(list => (
-                            <button 
-                              key={list.id} 
-                              onClick={() => addLeadToList(list.id)}
-                              className="px-4 py-1.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-full text-xs font-medium transition-all hover:border-primary/50"
-                            >
-                              + {list.name}
-                            </button>
-                          ))}
+                          {availableLists.length > 0 ? (
+                            availableLists.map(list => {
+                              const isAssigned = currentLeadLists.some(cl => cl.id === list.id);
+                              return (
+                                <div key={list.id} className="group relative flex items-center gap-1">
+                                  <button 
+                                    disabled={isAssigned || !selectedLead}
+                                    onClick={() => addLeadToList(list.id)}
+                                    className={`px-4 py-1.5 border rounded-full text-xs font-medium transition-all flex items-center gap-2 ${
+                                      isAssigned 
+                                      ? 'bg-primary/10 border-primary/20 text-primary/40 cursor-default' 
+                                      : 'bg-white/5 hover:bg-white/10 border-white/10 hover:border-primary/50'
+                                    }`}
+                                  >
+                                    {!isAssigned && <Plus className="size-3" />} {list.name}
+                                  </button>
+                                  <button 
+                                    onClick={() => { if(window.confirm(`確定要永久刪除名單「${list.name}」嗎？`)) deleteList(list.id)}}
+                                    className="p-1.5 bg-error/10 text-error rounded-full opacity-0 group-hover:opacity-100 transition-all border border-transparent hover:border-error/30"
+                                    title="刪除此名單"
+                                  >
+                                    <Trash2 className="size-3" />
+                                  </button>
+                                </div>
+                              );
+                            })
+                          ) : (
+                            <div className="text-xs text-text-secondary italic py-2">尚無可用名單，請先於上方建立</div>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -1499,51 +1583,58 @@ function App() {
         </section>
         
         {/* Sidebar: Logs / 系統日誌 */}
-        <section className="lg:col-span-1 animate-fade-in" style={{ animationDelay: '0.2s' }}>
-          <div className="glass rounded-3xl h-[calc(100vh-160px)] flex flex-col overflow-hidden sticky top-8 border-primary/20 shadow-2xl">
-            <div className="p-6 border-b border-glass-border bg-white/5 flex items-center justify-between">
-              <h2 className="text-lg font-bold flex items-center gap-2">
-                <Terminal className="size-5 text-primary" /> 即時偵測日誌
-              </h2>
-              <div className="size-2 rounded-full bg-success animate-pulse"></div>
-            </div>
-            
-            <div className="flex-1 overflow-y-auto p-4 space-y-4 font-mono text-[10px] scroll-smooth">
-              <AnimatePresence>
-                {logs.length > 0 ? logs.map((log, i) => (
-                  <motion.div 
-                    key={i} 
-                    initial={{ opacity: 0, x: -10 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    className="border-l-2 border-primary/50 pl-3 py-2 bg-white/5 rounded-r-lg group hover:bg-white/10 transition-all shadow-sm"
-                  >
-                     <div className="text-primary/70 mb-1 font-bold flex justify-between">
-                       <span>[{log.timestamp}]</span>
-                       <span className="text-[9px] uppercase tracking-tighter opacity-0 group-hover:opacity-100">Live Trace</span>
-                     </div>
-                     <div className="font-black text-white mb-2 tracking-wide uppercase">{log.type}</div>
-                     <pre className="text-text-secondary overflow-x-hidden whitespace-pre-wrap leading-relaxed opacity-90 break-all select-all">
-                      {JSON.stringify(log.data, null, 1)}
-                    </pre>
-                  </motion.div>
-                )) : (
-                  <div className="h-full flex flex-col items-center justify-center opacity-20 italic">
-                    <Activity className="size-12 mb-4" />
-                    等待活動產生...
+        <AnimatePresence>
+          {showLogs && (
+            <motion.section 
+              initial={{ opacity: 0, x: 50 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: 50 }}
+              className="lg:col-span-1"
+            >
+              <div className="glass rounded-3xl h-[calc(100vh-160px)] flex flex-col overflow-hidden sticky top-8 border-primary/20 shadow-2xl">
+                <div className="p-6 border-b border-glass-border bg-white/5 flex items-center justify-between">
+                  <h2 className="text-lg font-bold flex items-center gap-2">
+                    <Terminal className="size-5 text-primary" /> 即時偵測日誌
+                  </h2>
+                  <div className="size-2 rounded-full bg-success animate-pulse"></div>
+                </div>
+                
+                <div className="flex-1 overflow-y-auto p-4 space-y-4 font-mono text-[10px] scroll-smooth">
+                  {logs.length > 0 ? logs.map((log, i) => (
+                    <motion.div 
+                      key={i} 
+                      initial={{ opacity: 0, x: -10 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      className="border-l-2 border-primary/50 pl-3 py-2 bg-white/5 rounded-r-lg group hover:bg-white/10 transition-all shadow-sm"
+                    >
+                       <div className="text-primary/70 mb-1 font-bold flex justify-between">
+                         <span>[{log.timestamp}]</span>
+                         <span className="text-[9px] uppercase tracking-tighter opacity-0 group-hover:opacity-100">Live Trace</span>
+                       </div>
+                       <div className="font-black text-white mb-2 tracking-wide uppercase">{log.type}</div>
+                       <pre className="text-text-secondary overflow-x-hidden whitespace-pre-wrap leading-relaxed opacity-90 break-all select-all">
+                        {JSON.stringify(log.data, null, 1)}
+                      </pre>
+                    </motion.div>
+                  )) : (
+                    <div className="h-full flex flex-col items-center justify-center opacity-20 italic">
+                      <Activity className="size-12 mb-4" />
+                      等待活動產生...
+                    </div>
+                  )}
+                  <div ref={logEndRef} />
+                </div>
+                
+                <div className="p-4 bg-black/50 border-t border-glass-border">
+                  <div className="flex items-center gap-2 text-[10px] text-text-secondary font-mono">
+                    <span className="text-primary font-bold">ROOT@N8N-FACTORY:~$</span>
+                    <span className="animate-pulse">_</span>
                   </div>
-                )}
-              </AnimatePresence>
-              <div ref={logEndRef} />
-            </div>
-            
-            <div className="p-4 bg-black/50 border-t border-glass-border">
-              <div className="flex items-center gap-2 text-[10px] text-text-secondary font-mono">
-                <span className="text-primary font-bold">ROOT@N8N-FACTORY:~$</span>
-                <span className="animate-pulse">_</span>
+                </div>
               </div>
-            </div>
-          </div>
-        </section>
+            </motion.section>
+          )}
+        </AnimatePresence>
       </main>
 
       {/* Notification Toast */}
