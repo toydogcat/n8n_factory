@@ -6,8 +6,8 @@ import httpx
 from dotenv import load_dotenv
 
 # --- Configuration ---
-# Load env from backend folder
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# Load env from root folder
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 load_dotenv(os.path.join(BASE_DIR, ".env"))
 
 FRONTEND_ENV_PATH = os.path.join(os.path.dirname(BASE_DIR), "frontend", ".env")
@@ -72,9 +72,17 @@ async def sync_n8n_workflows(new_ip):
 
             print(f"📊 Found {len(workflows)} workflows.")
 
-            # Regex to find backend URLs (matches http/https + IP + :8000)
-            ip_pattern = r'(https?://)\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(:8000)'
-            replacement = rf'\1{new_ip}\2'
+            # Regex to find backend URLs and specific paths (Update IP and migration from /api/gmail/webhook -> /bot/gmail)
+            ip_pattern = r'(https?://)\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(:8000)(/api/gmail/webhook|/bot/gmail|/bot/command)?'
+            
+            def replace_url(match):
+                base = match.group(1) + new_ip + match.group(2)
+                path = match.group(3)
+                if path == "/api/gmail/webhook":
+                    return base + "/bot/gmail"
+                return base + (path if path else "")
+
+            # We'll use a functional replacement in the loop below
 
             for wf_info in workflows:
                 wf_id = wf_info["id"]
@@ -89,19 +97,33 @@ async def sync_n8n_workflows(new_ip):
                 
                 if re.search(ip_pattern, wf_str):
                     print(f"🔄 Updating IP in workflow: {wf_name} (ID: {wf_id})")
-                    new_wf_str = re.sub(ip_pattern, replacement, wf_str)
+                    # 2. Update the workflow JSON
+                    new_wf_str = re.sub(ip_pattern, replace_url, wf_str)
                     new_wf_data = json.loads(new_wf_str)
                     
+                    # 2.1 Specifically fix the "Post to Backend" node to send ALL data
+                    # This avoids the "undefined" mapping issues
+                    for node in new_wf_data.get("nodes", []):
+                        if node.get("name") == "Post to Backend":
+                            node["parameters"]["sendBody"] = True
+                            node["parameters"]["specifyBody"] = "jsonPayload"
+                            # Use stringify to be absolutely sure it's valid JSON
+                            node["parameters"]["jsonPayload"] = "={{ JSON.stringify($json) }}"
+                            print(f"🛠️  Upgraded 'Post to Backend' node with JSON.stringify in workflow: {wf_name}")
+
                     # 3. Push update back to n8n
-                    # Note: We usually only need to send the 'nodes' and 'connections'
+                    # Use a skeletal payload with an EMPTY settings object 
+                    # to satisfy both "required" and "no additional properties" constraints.
                     update_payload = {
+                        "name": new_wf_data.get("name"),
                         "nodes": new_wf_data.get("nodes"),
                         "connections": new_wf_data.get("connections"),
-                        "settings": new_wf_data.get("settings"),
-                        "staticData": new_wf_data.get("staticData")
+                        "settings": {} 
                     }
                     
                     update_res = await client.put(f"{N8N_BASE_URL}/api/v1/workflows/{wf_id}", json=update_payload, headers=headers)
+                    if update_res.status_code != 200:
+                        print(f"❌ Error Detail: {update_res.text}")
                     update_res.raise_for_status()
                     print(f"✅ Successfully updated workflow: {wf_name}")
                 else:

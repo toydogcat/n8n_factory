@@ -36,6 +36,6 @@ backend/.env
 *.sln
 
 # --- Project Specific ---
-data.db
+*.db
 *.log
 /ai_notices/*.pdf

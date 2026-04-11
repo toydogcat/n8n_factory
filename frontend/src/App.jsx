@@ -31,7 +31,8 @@ import {
   BookOpen,
   UserPlus,
   BrainCircuit,
-  User
+  User,
+  Mail
 } from 'lucide-react';
 import axios from 'axios';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -47,16 +48,23 @@ function App() {
   const [logs, setLogs] = useState([]);
   const [leads, setLeads] = useState([]);
   const [tasks, setTasks] = useState([]);
-  const [activeTab, setActiveTab] = useState('dashboard'); // dashboard, leads, customers, analytics
+  const [activeTab, setActiveTab] = useState(localStorage.getItem('activeTab') || 'dashboard'); // dashboard, leads, customers, analytics
   const [isConnected, setIsConnected] = useState(false);
   
   // 客戶管理相關狀態
   const [selectedLead, setSelectedLead] = useState(null);
+  const [platformFilter, setPlatformFilter] = useState('all'); // 'all', 'line', 'gmail'
   const [leadLogs, setLeadLogs] = useState([]);
   const [availableLists, setAvailableLists] = useState([]);
   const [currentLeadLists, setCurrentLeadLists] = useState([]);
   const [newListName, setNewListName] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
+  
+  // CRM 2.0 新增狀態
+  const [msgSearchQuery, setMsgSearchQuery] = useState('');
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [editingName, setEditingName] = useState(false);
+  const [newName, setNewName] = useState('');
   
   // -- Broadcast State --
   const [broadcastTemplates, setBroadcastTemplates] = useState({});
@@ -118,8 +126,12 @@ function App() {
           const log = JSON.parse(event.data);
           setLogs(prev => {
             const newLogs = [...prev.slice(-49), { ...log, timestamp: new Date().toLocaleTimeString() }];
-            if (['BOT_CMD_IN', 'BOT_CMD_OUT', 'TRIGGER_SUCCESS'].includes(log.type)) {
+            const refreshTriggers = ['BOT_CMD_IN', 'BOT_CMD_OUT', 'TRIGGER_SUCCESS', 'GMAIL_IN', 'GMAIL_OUT', 'GMAIL_RAW'];
+            if (refreshTriggers.includes(log.type)) {
               fetchData();
+              if (selectedLead) {
+                fetchLeadDetails(selectedLead);
+              }
             }
             return newLogs;
           });
@@ -136,6 +148,10 @@ function App() {
   useEffect(() => {
     logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [logs]);
+
+  useEffect(() => {
+    localStorage.setItem('activeTab', activeTab);
+  }, [activeTab]);
 
   const triggerWorkflow = async (id) => {
     try {
@@ -189,6 +205,21 @@ function App() {
       fetchLeadDetails(selectedLead);
     } catch (error) {
       console.error('Remove from List Error:', error);
+    }
+  };
+
+  const updateLead = async (leadId, data) => {
+    try {
+      const res = await axios.patch(`${API_BASE}/leads/${leadId}`, data);
+      showNotification("客戶資料已更新", "success");
+      fetchData(); // 重新整理列表
+      if (selectedLead && selectedLead.id === leadId) {
+        setSelectedLead(res.data);
+      }
+      setEditingName(false);
+    } catch (error) {
+      console.error('Update Lead Error:', error);
+      showNotification("更新失敗", "error");
     }
   };
 
@@ -532,10 +563,25 @@ function App() {
                 exit={{ opacity: 0, x: -20 }}
                 className="glass rounded-3xl overflow-hidden shadow-2xl"
               >
-                <div className="p-8 border-b border-glass-border bg-white/5 flex flex-col md:flex-row justify-between items-center gap-4">
-                  <h2 className="text-2xl font-bold flex items-center gap-3">
-                    <Users className="size-6 text-accent-cyan" /> 線索管理系統
-                  </h2>
+                <div className="p-8 border-b border-glass-border bg-white/5 flex flex-col md:flex-row justify-between items-center gap-6">
+                  <div className="flex flex-col gap-2">
+                    <h2 className="text-2xl font-bold flex items-center gap-3">
+                      <Users className="size-6 text-accent-cyan" /> 線索管理系統
+                    </h2>
+                    <div className="flex bg-black/30 p-1 rounded-xl w-fit border border-white/5 scale-90 -ml-2">
+                      {['all', 'line', 'gmail'].map(f => (
+                        <button
+                          key={f}
+                          onClick={() => setPlatformFilter(f)}
+                          className={`px-4 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all ${
+                            platformFilter === f ? 'bg-primary text-white shadow-lg' : 'text-text-secondary hover:text-white'
+                          }`}
+                        >
+                          {f === 'all' ? '全部' : f}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                   <div className="relative w-full md:w-auto">
                     <Search className="size-4 absolute left-4 top-1/2 -translate-y-1/2 text-text-secondary" />
                     <input 
@@ -557,7 +603,13 @@ function App() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-glass-border">
-                      {leads.length > 0 ? leads.map((lead, i) => (
+                      {leads.filter(l => 
+                        platformFilter === 'all' || 
+                        (l.source && l.source.toLowerCase() === platformFilter.toLowerCase())
+                      ).length > 0 ? leads.filter(l => 
+                        platformFilter === 'all' || 
+                        (l.source && l.source.toLowerCase() === platformFilter.toLowerCase())
+                      ).map((lead, i) => (
                         <motion.tr 
                           key={lead.id} 
                           initial={{ opacity: 0, y: 10 }}
@@ -566,8 +618,30 @@ function App() {
                           className="hover:bg-white/5 transition-colors group"
                         >
                           <td className="px-8 py-5">
-                            <div className="font-bold text-lg">{lead.name || '訪客'}</div>
-                            <div className="text-xs text-text-secondary font-mono opacity-60">{lead.line_uid.slice(0, 16)}...</div>
+                            <div className="flex items-center gap-3">
+                              {lead.source === 'gmail' ? (
+                                <div className="p-1.5 bg-red-500/10 rounded-lg">
+                                  <Mail className="size-4 text-red-500" />
+                                </div>
+                              ) : (
+                                <div className="p-1.5 bg-success/10 rounded-lg">
+                                  <MessageSquare className="size-4 text-success" />
+                                </div>
+                              )}
+                              <div>
+                                <div className="flex items-center gap-2">
+                                  <div className="font-bold text-lg">{lead.name || '訪客'}</div>
+                                  <span className={`px-2 py-0.5 rounded text-[8px] font-black uppercase border ${
+                                    lead.source === 'gmail' ? 'bg-red-500/10 text-red-500 border-red-500/20' : 'bg-success/10 text-success border-success/20'
+                                  }`}>
+                                    {lead.source || 'LINE'}
+                                  </span>
+                                </div>
+                                <div className="text-xs text-text-secondary font-mono opacity-60">
+                                  {lead.source === 'gmail' ? lead.platform_id : (lead.line_uid?.slice(0, 16) + "...")}
+                                </div>
+                              </div>
+                            </div>
                           </td>
                           <td className="px-8 py-5">
                             <span className={`px-3 py-1 rounded-full text-[10px] font-black ${
@@ -620,37 +694,85 @@ function App() {
               >
                 {/* Left: Lead Selector (3 cols) */}
                 <div className="lg:col-span-3 glass rounded-3xl overflow-hidden border border-glass-border flex flex-col h-[calc(100vh-280px)]">
-                  <div className="p-6 border-b border-glass-border">
-                    <h3 className="text-xl font-bold flex items-center gap-2 mb-4">
-                      <Search className="size-5 text-accent-cyan" /> 選擇客戶
-                    </h3>
-                    <div className="relative">
-                      <Search className="size-4 absolute left-3 top-1/2 -translate-y-1/2 text-text-secondary" />
-                      <input 
-                        type="text" 
-                        placeholder="搜尋 UID 或 名稱..."
-                        value={searchQuery}
-                        onChange={(e) => setSearchQuery(e.target.value)}
-                        className="w-full bg-white/5 border border-glass-border rounded-xl pl-10 pr-4 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary/50"
-                      />
+                  <div className="p-6 border-b border-glass-border bg-white/5">
+                    <div className="flex justify-between items-center mb-4">
+                      <h3 className="text-xl font-bold flex items-center gap-2">
+                        <Users className="size-5 text-primary" /> 選擇客戶
+                      </h3>
+                      <button 
+                        onClick={fetchData} 
+                        className="p-2 hover:bg-white/10 rounded-full transition-colors text-text-secondary hover:text-white"
+                        title="重新整理數據"
+                      >
+                        <RefreshCw className={`size-4 ${isConnected ? '' : 'animate-spin'}`} />
+                      </button>
+                    </div>
+                    <div className="space-y-4">
+                      <div className="relative">
+                        <Search className="size-4 absolute left-3 top-1/2 -translate-y-1/2 text-text-secondary" />
+                        <input 
+                          type="text" 
+                          placeholder="搜尋 UID 或 名稱..."
+                          value={searchQuery}
+                          onChange={(e) => setSearchQuery(e.target.value)}
+                          className="w-full bg-black/40 border border-glass-border rounded-xl pl-10 pr-4 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary/50"
+                        />
+                      </div>
+                      <div className="flex bg-black/30 p-1 rounded-xl w-full border border-white/5">
+                        {['all', 'line', 'gmail'].map(f => (
+                          <button
+                            key={f}
+                            onClick={() => setPlatformFilter(f)}
+                            className={`flex-1 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all ${
+                              platformFilter === f ? 'bg-primary text-white shadow-lg' : 'text-text-secondary hover:text-white'
+                            }`}
+                          >
+                            {f === 'all' ? '全部' : f}
+                          </button>
+                        ))}
+                      </div>
                     </div>
                   </div>
                   <div className="flex-1 overflow-y-auto p-2 space-y-1">
-                    {leads.filter(l => 
-                      (l.name || '').toLowerCase().includes(searchQuery.toLowerCase()) || 
-                      l.line_uid.toLowerCase().includes(searchQuery.toLowerCase())
-                    ).map(lead => (
+                    {leads.filter(l => {
+                      const search = searchQuery.toLowerCase();
+                      const matchesSearch = 
+                        (l.name || '').toLowerCase().includes(search) || 
+                        (l.line_uid || '').toLowerCase().includes(search) ||
+                        (l.platform_id || '').toLowerCase().includes(search);
+                      
+                      const matchesPlatform = 
+                        platformFilter === 'all' || 
+                        (l.source && l.source.toLowerCase() === platformFilter.toLowerCase()) ||
+                        (!l.source && platformFilter === 'line');
+                        
+                      return matchesSearch && matchesPlatform;
+                    }).map(lead => (
                       <button
                         key={lead.id}
                         onClick={() => fetchLeadDetails(lead)}
-                        className={`w-full text-left p-4 rounded-2xl transition-all ${
+                        className={`w-full text-left p-4 rounded-2xl transition-all flex items-center gap-3 relative group ${
                           selectedLead?.id === lead.id 
-                          ? 'bg-primary/20 border border-primary/30' 
+                          ? 'bg-primary/20 border border-primary/30 ring-1 ring-primary/20' 
                           : 'hover:bg-white/5 border border-transparent'
                         }`}
                       >
-                        <div className="font-bold">{lead.name || '訪客'}</div>
-                        <div className="text-xs text-text-secondary font-mono truncate">{lead.line_uid}</div>
+                        <div className={`p-2 rounded-lg relative ${lead.source === 'gmail' ? 'bg-red-500/10 text-red-500' : 'bg-success/10 text-success'}`}>
+                          {lead.source === 'gmail' ? <Mail className="size-4" /> : <MessageSquare className="size-4" />}
+                          <div className={`absolute -right-1 -bottom-1 size-2.5 rounded-full border-2 border-secondary ${lead.status === 'active' || !lead.status ? 'bg-success' : 'bg-text-secondary'}`} />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center justify-between">
+                            <div className="font-bold truncate text-sm">{lead.name || '訪客'}</div>
+                            <span className="text-[8px] opacity-40 uppercase font-black">{lead.source || 'line'}</span>
+                          </div>
+                          <div className="text-[10px] text-text-secondary font-mono truncate">
+                            {lead.source === 'gmail' ? lead.platform_id : lead.line_uid}
+                          </div>
+                        </div>
+                        {selectedLead?.id === lead.id && (
+                          <motion.div layoutId="activeLead" className="absolute left-0 w-1 h-8 bg-primary rounded-r-full" />
+                        )}
                       </button>
                     ))}
                   </div>
@@ -658,63 +780,216 @@ function App() {
 
                 {/* Middle: Conversation Logs & List Management (5 cols) */}
                 <div className="lg:col-span-5 flex flex-col gap-6">
-                  <div className="glass rounded-3xl overflow-hidden border border-glass-border flex flex-col h-[400px]">
-                    <div className="p-6 border-b border-glass-border flex justify-between items-center">
-                      <h3 className="text-lg font-bold flex items-center gap-2">
-                        <MessageSquare className="size-5 text-primary" /> 對話紀錄
-                        {selectedLead && <span className="text-xs font-normal text-text-secondary ml-2">({selectedLead.name || '訪客'})</span>}
-                      </h3>
+                  <div className="glass rounded-3xl overflow-hidden border border-glass-border flex flex-col h-[600px] shadow-2xl relative">
+                    
+                    {/* Enhanced Chat Header */}
+                    <div className="p-4 border-b border-glass-border bg-white/5 backdrop-blur-md flex items-center justify-between gap-4 z-20">
+                      <div className="flex items-center gap-3 flex-1 min-w-0">
+                        <div className={`p-2 rounded-xl ${selectedLead?.source === 'gmail' ? 'bg-red-500/10 text-red-500' : 'bg-primary/10 text-primary'}`}>
+                          {selectedLead?.source === 'gmail' ? <Mail className="size-5" /> : <MessageSquare className="size-5" />}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          {editingName ? (
+                            <div className="flex items-center gap-2">
+                              <input 
+                                autoFocus
+                                value={newName}
+                                onChange={(e) => setNewName(e.target.value)}
+                                onKeyDown={(e) => e.key === 'Enter' && updateLead(selectedLead.id, { name: newName })}
+                                className="bg-black/40 border border-primary/50 text-sm px-2 py-1 rounded w-full focus:outline-none"
+                              />
+                              <button onClick={() => updateLead(selectedLead.id, { name: newName })} className="text-success text-xs font-bold">儲存</button>
+                              <button onClick={() => setEditingName(false)} className="text-text-secondary text-xs">取消</button>
+                            </div>
+                          ) : (
+                            <div className="flex items-center gap-2">
+                              <h3 className="font-bold text-lg truncate">{selectedLead?.name || '請選擇客戶'}</h3>
+                              {selectedLead && (
+                                <button 
+                                  onClick={() => {setEditingName(true); setNewName(selectedLead.name || ''); }} 
+                                  className="p-1 hover:bg-white/10 rounded-lg text-text-secondary hover:text-white transition-colors"
+                                >
+                                  <Code className="size-3" />
+                                </button>
+                              )}
+                            </div>
+                          )}
+                          <div className="text-[10px] text-text-secondary flex items-center gap-2">
+                            <span className={`size-1.5 rounded-full ${selectedLead?.status === 'active' || !selectedLead?.status ? 'bg-success' : 'bg-error'}`}></span>
+                            {selectedLead?.source === 'gmail' ? 'GMAIL 商務郵件' : 'LINE 即時動態'} 
+                            {selectedLead?.status === 'inactive' && ' (已停用)'}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <div className="relative">
+                          <Search className="size-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-text-secondary" />
+                          <input 
+                            placeholder="搜尋對話..."
+                            value={msgSearchQuery}
+                            onChange={(e) => setMsgSearchQuery(e.target.value)}
+                            className="bg-black/40 border border-white/5 rounded-full pl-9 pr-4 py-1.5 text-xs w-32 md:w-48 focus:w-64 transition-all outline-none focus:ring-1 focus:ring-primary/40"
+                          />
+                        </div>
+                        <button 
+                          onClick={() => setIsSettingsOpen(!isSettingsOpen)}
+                          className={`p-2 rounded-xl transition-all ${isSettingsOpen ? 'bg-primary text-white' : 'bg-white/5 hover:bg-white/10 text-text-secondary'}`}
+                        >
+                          <Settings className="size-5" />
+                        </button>
+                      </div>
                     </div>
-                    <div className="flex-1 overflow-y-auto p-6 space-y-4 bg-black/20">
-                      {selectedLead ? (
-                        leadLogs.length > 0 ? leadLogs.map((log, i) => (
-                          <div key={i} className={`flex ${log.event_type?.includes('IN') ? 'justify-start' : 'justify-end'}`}>
-                            <div className={`max-w-[85%] p-3 rounded-2xl ${
-                              log.event_type?.includes('IN') 
-                              ? 'bg-white/10 rounded-tl-none' 
-                              : 'bg-primary/20 border border-primary/30 rounded-tr-none text-right'
-                            }`}>
-                              <div className="text-[9px] text-text-secondary mb-1">
-                                {new Date(log.timestamp).toLocaleString()}
+
+                    {/* Settings Overlay Panel */}
+                    <AnimatePresence>
+                      {isSettingsOpen && selectedLead && (
+                        <motion.div 
+                          initial={{ height: 0, opacity: 0 }}
+                          animate={{ height: 'auto', opacity: 1 }}
+                          exit={{ height: 0, opacity: 0 }}
+                          className="bg-secondary/95 backdrop-blur-xl border-b border-glass-border overflow-hidden z-10"
+                        >
+                          <div className="p-6 grid grid-cols-2 gap-8">
+                            <div>
+                              <p className="text-[10px] font-black text-primary uppercase mb-3 tracking-widest">自動化設定</p>
+                              <div className="flex items-center justify-between p-3 bg-white/5 rounded-2xl border border-white/5">
+                                <span className="text-xs font-bold">主動推送狀態</span>
+                                <button 
+                                  onClick={() => updateLead(selectedLead.id, { status: selectedLead.status === 'inactive' ? 'active' : 'inactive' })}
+                                  className={`w-12 h-6 rounded-full p-1 transition-all ${selectedLead.status === 'inactive' ? 'bg-white/10' : 'bg-success'}`}
+                                >
+                                  <div className={`size-4 bg-white rounded-full shadow-lg transition-all ${selectedLead.status === 'inactive' ? 'translate-x-0' : 'translate-x-6'}`} />
+                                </button>
                               </div>
-                              <div className="text-xs whitespace-pre-wrap">{log.content}</div>
+                            </div>
+                            <div>
+                              <p className="text-[10px] font-black text-accent-pink uppercase mb-3 tracking-widest">危險區域</p>
+                              <button className="w-full py-3 rounded-2xl bg-error/10 text-error text-xs font-bold border border-error/20 hover:bg-error/20 transition-all">
+                                移除此客戶資料
+                              </button>
                             </div>
                           </div>
-                        )) : (
-                          <div className="h-full flex items-center justify-center text-text-secondary italic text-sm">尚無對話紀錄</div>
-                        )
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                    
+                    {/* Chat Messages */}
+                    <div className="flex-1 overflow-y-auto p-6 space-y-6 bg-black/40 scrollbar-hide">
+                      {selectedLead ? (
+                        (() => {
+                          const filteredLogs = leadLogs.filter(log => 
+                            log.content.toString().toLowerCase().includes(msgSearchQuery.toLowerCase())
+                          );
+                          
+                          return filteredLogs.length > 0 ? filteredLogs.map((log, i) => {
+                            const isGmail = log.source === 'gmail' || log.event_type?.includes('GMAIL');
+                            const isIncoming = log.event_type?.includes('IN');
+                            let mailData = null;
+                            if (isGmail) {
+                              try {
+                                mailData = typeof log.content === 'object' ? log.content : JSON.parse(log.content);
+                              } catch (e) {
+                                mailData = { content: log.content };
+                              }
+                            }
+
+                            return (
+                              <motion.div 
+                                key={i} 
+                                initial={{ opacity: 0, scale: 0.95, y: 10 }}
+                                animate={{ opacity: 1, scale: 1, y: 0 }}
+                                className={`flex ${isIncoming ? 'justify-start' : 'justify-end'} group`}
+                              >
+                                <div className={`max-w-[85%] ${isGmail ? 'w-full' : ''} relative`}>
+                                  <div className={`p-4 rounded-3xl shadow-xl backdrop-blur-md border ${
+                                    isIncoming 
+                                    ? 'bg-white/10 border-white/10 rounded-tl-none' 
+                                    : 'bg-primary/20 border-primary/30 rounded-tr-none'
+                                  }`}>
+                                    <div className="text-[10px] text-text-secondary mb-2 flex justify-between items-center opacity-60">
+                                      <span>{new Date(log.timestamp).toLocaleTimeString()} · {new Date(log.timestamp).toLocaleDateString()}</span>
+                                      <span className={`px-2 py-0.5 rounded-full uppercase text-[8px] font-black tracking-tighter ${isGmail ? 'bg-red-500/20 text-red-400' : 'bg-success/20 text-success'}`}>
+                                        {log.source || 'LINE'}
+                                      </span>
+                                    </div>
+                                    
+                                    {isGmail && mailData ? (
+                                      <div className="bg-black/30 rounded-2xl p-4 border border-white/5 space-y-4 shadow-inner text-left">
+                                        <div className="flex items-center gap-3 border-b border-white/5 pb-3">
+                                          <div className="bg-red-500/20 p-2 rounded-xl"><Mail className="size-4 text-red-400" /></div>
+                                          <div className="flex-1 min-w-0">
+                                            <div className="text-white font-bold text-sm truncate">{mailData.subject || '無主旨'}</div>
+                                            <div className="text-[11px] text-text-secondary truncate">{mailData.sender || '未知寄件者'}</div>
+                                          </div>
+                                        </div>
+                                        <div className="text-[13px] text-white/90 leading-relaxed font-sans pt-1">
+                                          {mailData.content || mailData.body || log.content}
+                                        </div>
+                                        <div className="text-[9px] text-primary/40 text-right pt-2 border-t border-white/5 italic flex items-center justify-end gap-1">
+                                          <Zap className="size-2.5" /> 加密傳輸保護中
+                                        </div>
+                                      </div>
+                                    ) : (
+                                      <div className="text-sm leading-relaxed whitespace-pre-wrap">{log.content}</div>
+                                    )}
+                                  </div>
+                                  {!isIncoming && (
+                                    <div className="absolute -left-12 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                      <div className="p-2 bg-white/5 rounded-full"><Activity className="size-3 text-primary" /></div>
+                                    </div>
+                                  )}
+                                </div>
+                              </motion.div>
+                            );
+                          }) : (
+                            <div className="h-full flex flex-col items-center justify-center text-text-secondary py-20">
+                              <Search className="size-12 mb-4 opacity-10" />
+                              <p className="italic text-sm">找不到相關的對話內容</p>
+                              {msgSearchQuery && <button onClick={() => setMsgSearchQuery('')} className="mt-2 text-primary text-xs font-bold underline">清除關鍵字</button>}
+                            </div>
+                          )
+                        })()
                       ) : (
-                        <div className="h-full flex items-center justify-center text-text-secondary italic text-sm">請先從左側選擇客戶</div>
+                        <div className="h-full flex flex-col items-center justify-center text-text-secondary py-20">
+                          <Users className="size-12 mb-4 opacity-10" />
+                          <p className="italic text-sm font-medium">請先從左側列表選擇一位客戶</p>
+                        </div>
                       )}
                     </div>
                   </div>
 
-                  <div className="glass rounded-3xl p-6 border border-glass-border">
-                    <h3 className="text-lg font-bold flex items-center gap-2 mb-4">
-                      <Settings className="size-5 text-accent-pink" /> 名單標記
+                  <div className="glass rounded-3xl p-6 border border-glass-border shadow-xl">
+                    <h3 className="text-lg font-bold flex items-center gap-2 mb-5">
+                      <Settings className="size-5 text-accent-pink" /> 快速標籤清單
                     </h3>
-                    <div className="space-y-4">
-                      <div>
-                        <p className="text-[10px] font-bold text-text-secondary uppercase mb-2">已加入名單</p>
+                    <div className="space-y-6">
+                      <div className="p-4 bg-white/5 rounded-2xl border border-white/5">
+                        <p className="text-[10px] font-black text-primary uppercase mb-3 tracking-widest">已分配的名單組</p>
                         <div className="flex flex-wrap gap-2">
                           {selectedLead ? (
                             currentLeadLists.length > 0 ? currentLeadLists.map(list => (
-                              <span key={list.id} className="inline-flex items-center gap-2 px-3 py-1 bg-primary/20 text-primary border border-primary/30 rounded-full text-[10px] font-bold">
+                              <motion.span 
+                                initial={{ scale: 0.8 }}
+                                animate={{ scale: 1 }}
+                                key={list.id} 
+                                className="inline-flex items-center gap-2 px-4 py-1.5 bg-primary/20 text-primary border border-primary/30 rounded-full text-xs font-bold shadow-lg"
+                              >
                                 {list.name}
-                                <button onClick={() => removeLeadFromList(list.id)} className="hover:text-error transition-colors">×</button>
-                              </span>
-                            )) : <div className="text-xs text-text-secondary italic">尚未加入</div>
-                          ) : <div className="text-xs text-text-secondary italic">請先選擇客戶</div>}
+                                <button onClick={() => removeLeadFromList(list.id)} className="hover:text-error transition-colors text-lg">×</button>
+                              </motion.span>
+                            )) : <div className="text-xs text-text-secondary italic py-2">尚未加入任何名單</div>
+                          ) : <div className="text-xs text-text-secondary italic py-2">請先選擇客戶</div>}
                         </div>
                       </div>
                       <div>
-                        <p className="text-[10px] font-bold text-text-secondary uppercase mb-2">可選名單</p>
-                        <div className="flex flex-wrap gap-1">
+                        <p className="text-[10px] font-black text-text-secondary uppercase mb-3 tracking-widest">推薦名單轉移</p>
+                        <div className="flex flex-wrap gap-2">
                           {selectedLead && availableLists.filter(l => !currentLeadLists.some(cl => cl.id === l.id)).map(list => (
                             <button 
                               key={list.id} 
                               onClick={() => addLeadToList(list.id)}
-                              className="px-2 py-1 bg-white/5 hover:bg-white/10 border border-white/10 rounded-full text-[10px]"
+                              className="px-4 py-1.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-full text-xs font-medium transition-all hover:border-primary/50"
                             >
                               + {list.name}
                             </button>

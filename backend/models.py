@@ -19,6 +19,8 @@ class Lead(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     line_uid = Column(String, unique=True, index=True)
+    platform_id = Column(String, index=True) # General ID (email or line_uid)
+    source = Column(String, default="line")  # line, gmail
     name = Column(String)
     status = Column(String, default="new")  # new, in-progress, completed
     meta_info = Column(JSON, default={})     # Custom data captured (phone, email, etc.)
@@ -42,8 +44,9 @@ class InteractionLog(Base):
     __tablename__ = "interaction_logs"
 
     id = Column(Integer, primary_key=True, index=True)
-    entity_id = Column(String)  # Using line_uid or ID to link to Lead
-    event_type = Column(String)  # BOT_CMD_IN, BOT_CMD_OUT, TRIGGER_SUCCESS
+    entity_id = Column(String)  # Using line_uid or platform_id to link
+    source = Column(String, default="line")   # line, gmail
+    event_type = Column(String)  # BOT_CMD_IN, BOT_CMD_OUT, TRIGGER_SUCCESS, GMAIL_IN, GMAIL_OUT
     content = Column(String)
     timestamp = Column(DateTime, default=datetime.utcnow)
 

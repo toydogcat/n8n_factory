@@ -1,0 +1,450 @@
+{
+  "name": "[n8n Factory] ALL",
+  "nodes": [
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "filters": {
+          "q": "subject:[測試]"
+        }
+      },
+      "id": "18e27243-2a2d-46eb-ad51-dedf50726328",
+      "name": "Gmail Trigger",
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1,
+      "position": [
+        1872,
+        272
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "DJ0G2PGAoJWinNga",
+          "name": "Gmail Account Shrimp"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://192.168.0.147:8000/bot/gmail",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ \n  JSON.stringify({\n    \"sender\": $json.From,\n    \"subject\": $json.Subject,\n    \"body\": $json.snippet,\n    \"message_id\": $json.id\n  }) \n}}",
+        "options": {}
+      },
+      "id": "1f34ee1b-d46c-42c4-a488-9917760e7c02",
+      "name": "Post to Backend",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        2096,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "type": "string"
+          },
+          "conditions": [
+            {
+              "id": "check-trash",
+              "leftValue": "={{ $json.action }}",
+              "rightValue": "trash",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "aad54eec-271d-4882-826c-435906e52f61",
+      "name": "If Trash",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2320,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "trash"
+      },
+      "id": "d0ad9fcb-8608-4460-8f8f-18cf0eff5ad6",
+      "name": "Move to Trash",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2,
+      "position": [
+        2544,
+        272
+      ],
+      "webhookId": "f6b99c02-957c-490d-9c51-1813355a2255",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "DJ0G2PGAoJWinNga",
+          "name": "Gmail Account Shrimp"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "gmail-sender",
+        "options": {}
+      },
+      "id": "64de2f61-a96f-4c94-9eb4-84be218795aa",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        1872,
+        560
+      ],
+      "webhookId": "gmail-outbound-webhook"
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $json.to }}",
+        "subject": "={{ $json.subject }}",
+        "message": "={{ $json.message }}",
+        "options": {}
+      },
+      "id": "77c8fca4-300f-4676-a999-974b91c38dd4",
+      "name": "Gmail",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2,
+      "position": [
+        2096,
+        560
+      ],
+      "webhookId": "16892606-56b5-4d6c-9940-4e06fb64b8b7",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "DJ0G2PGAoJWinNga",
+          "name": "Gmail Account Shrimp"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.line.me/v2/bot/message/reply",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"replyToken\": \"{{ $('Webhook from Line Message').item.json.body.events[0].replyToken }}\",\n  \"messages\": [\n    {\n      \"type\": \"text\",\n      \"text\": \"收到您的訊息 : {{ $('Webhook from Line Message').item.json.body.events[0].message.text }}\"\n    }\n  ]\n}",
+        "options": {}
+      },
+      "id": "4e3dd6a4-70f9-4256-94fb-d05a9c2cd942",
+      "name": "Line : Reply with token",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [
+        1584,
+        416
+      ],
+      "typeVersion": 4.2,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "NHon4aDviUm1SkEQ",
+          "name": "Header Auth account Line Bot 地球"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "638c118e-1c98-4491-b6ff-14e2e75380b6",
+        "options": {}
+      },
+      "id": "1ba5e856-9047-43b3-a3f1-838e0668bfc9",
+      "name": "Webhook from Line Message",
+      "type": "n8n-nodes-base.webhook",
+      "position": [
+        1104,
+        432
+      ],
+      "webhookId": "638c118e-1c98-4491-b6ff-14e2e75380b6",
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "content": "## Line Message API Reply\n\nReceived Message from user and reply with same text by using reply token  \n\nThere are many event types. So we need to determine if the type is message.",
+        "height": 340,
+        "width": 720
+      },
+      "id": "75fb5b24-c22a-42c0-ab19-26fe72d0257a",
+      "name": "Sticky Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        1024,
+        240
+      ],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "b63773bb-f010-4018-8142-240c9aaa4570",
+              "operator": {
+                "name": "filter.operator.equals",
+                "type": "string",
+                "operation": "equals"
+              },
+              "leftValue": "={{ $json.body.events[0].type }}",
+              "rightValue": "message"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "42b9ccc2-5466-4020-924e-6011cde481f2",
+      "name": "If",
+      "type": "n8n-nodes-base.if",
+      "position": [
+        1328,
+        432
+      ],
+      "typeVersion": 2.2
+    },
+    {
+      "parameters": {
+        "content": "## Line Message API Send Message\n\nYou need to get the Line UID first.\nEvery user is differnt.\n\nIf you have the Line UID. Then you can push the message to the User.",
+        "height": 340,
+        "width": 720
+      },
+      "id": "0311f6a2-5de9-4068-a5b5-86797875ee1f",
+      "name": "Sticky Note1",
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        1024,
+        672
+      ],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {},
+      "id": "449e1121-b452-4442-8c7a-c99dfad5c7c9",
+      "name": "When clicking ‘Test workflow’",
+      "type": "n8n-nodes-base.manualTrigger",
+      "position": [
+        1104,
+        848
+      ],
+      "typeVersion": 1
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "6278f340-6287-4e89-b774-f6c584954d5b",
+              "name": "line_uid",
+              "type": "string",
+              "value": "Uxxxxxxxxxxxx"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "2d0915ec-d4dc-4359-a6c0-4233cfc202e5",
+      "name": "Edit Fields",
+      "type": "n8n-nodes-base.set",
+      "position": [
+        1328,
+        848
+      ],
+      "typeVersion": 3.4
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.line.me/v2/bot/message/push",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"to\": \"{{ $json.line_uid }}\",\n  \"messages\": [\n    {\n      \"type\": \"text\",\n      \"text\": \"推播測試\"\n    }\n  ]\n}",
+        "options": {}
+      },
+      "id": "c48bb9ad-c305-48a6-bc3b-9e78051de52f",
+      "name": "Line : Push Message",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [
+        1568,
+        848
+      ],
+      "typeVersion": 4.2,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "NHon4aDviUm1SkEQ",
+          "name": "Header Auth account Line Bot 地球"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://192.168.0.147:8000/bot/command",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "uid",
+              "value": "={{ $json.body.events[0].source.userId }}"
+            },
+            {
+              "name": "message",
+              "value": "={{ $json.body.events[0].message.text }}"
+            },
+            {
+              "name": "username",
+              "value": "User"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "line-notify-node",
+      "name": "Line to Backend",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        400,
+        304
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Gmail Trigger": {
+      "main": [
+        [
+          {
+            "node": "Post to Backend",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Post to Backend": {
+      "main": [
+        [
+          {
+            "node": "If Trash",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Trash": {
+      "main": [
+        [
+          {
+            "node": "Move to Trash",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Gmail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "Line : Reply with token",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields": {
+      "main": [
+        [
+          {
+            "node": "Line : Push Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook from Line Message": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Line to Backend",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When clicking ‘Test workflow’": {
+      "main": [
+        [
+          {
+            "node": "Edit Fields",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
+  },
+  "versionId": "07f478be-f732-4c4c-84d8-7515043f33f2",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "8bd6cc74d1c671b8d3a9c74dbaf8d9de335327c341b877046c7901642c8a07b0"
+  },
+  "id": "dpURq17bp5Ib2fav",
+  "tags": []
+}

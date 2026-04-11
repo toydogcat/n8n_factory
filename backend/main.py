@@ -25,6 +25,33 @@ init_db()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("n8n-factory")
 
+# --- Pydantic Schemas for Frontend API ---
+class LeadResponse(BaseModel):
+    id: int
+    line_uid: Optional[str] = None
+    platform_id: Optional[str] = None
+    source: Optional[str] = "line"
+    name: Optional[str] = None
+    status: str
+    onboarding_step: int
+    meta_info: Dict[str, Any]
+    last_interaction: Optional[datetime]
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class LogResponse(BaseModel):
+    id: int
+    entity_id: Optional[str]
+    source: Optional[str]
+    event_type: Optional[str]
+    content: Optional[str]
+    timestamp: datetime
+
+    class Config:
+        from_attributes = True
+
 app = FastAPI(title="n8n Factory API")
 
 # Enable CORS for frontend
@@ -59,9 +86,9 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
-async def log_event(event_type: str, data: Any, db: Optional[Session] = None, entity_id: Optional[str] = None):
-    payload_str = json.dumps({"type": event_type, "data": data, "entity_id": entity_id})
-    logger.info(f"Event: {event_type} - {payload_str}")
+async def log_event(event_type: str, data: Any, db: Optional[Session] = None, entity_id: Optional[str] = None, source: str = "line"):
+    payload_str = json.dumps({"type": event_type, "source": source, "data": data, "entity_id": entity_id})
+    logger.info(f"Event: {event_type} ({source}) - {payload_str}")
     await manager.broadcast(payload_str)
     
     # Optional: Persist logs to DB
@@ -69,6 +96,7 @@ async def log_event(event_type: str, data: Any, db: Optional[Session] = None, en
         new_log = InteractionLog(
             event_type=event_type,
             entity_id=entity_id,
+            source=source,
             content=str(data),
             timestamp=datetime.utcnow()
         )
@@ -95,7 +123,7 @@ async def bot_command_handler(cmd: BotCommand, db: Session = Depends(get_db)):
     """
     try:
         text = cmd.message.strip().lower()
-        await log_event("BOT_CMD_IN", cmd.dict(), db, entity_id=cmd.uid)
+        await log_event("BOT_CMD_IN", cmd.dict(), db, entity_id=cmd.uid, source="line")
 
         # 1. Update or Create Lead
         lead = db.query(Lead).filter(Lead.line_uid == cmd.uid).first()
@@ -194,12 +222,139 @@ async def bot_command_handler(cmd: BotCommand, db: Session = Depends(get_db)):
             "error": str(e)
         }
 
+# --- Gmail Integration (New) ---
+
+def sanitize_email_content(text: str) -> str:
+    """Mask URLs: http -> htp as per user security requirement."""
+    if not text: return ""
+    # Regex to find http/https and replace with htp/htps
+    # We use a simple replace for 'http' to catch both
+    return text.replace("http", "htp")
+
+class GmailIncoming(BaseModel):
+    # Make everything optional to avoid 422 errors when n8n mapping fails
+    sender: Optional[str] = "Unknown"
+    subject: Optional[str] = "(No Subject)"
+    body: Optional[str] = "(No Content)"
+    message_id: Optional[str] = None
+
+@app.post("/bot/gmail")
+async def gmail_webhook_handler(request: Request, mail: Optional[GmailIncoming] = None, db: Session = Depends(get_db)):
+    """
+    Receives incoming Gmail from n8n.
+    Robust handling to prevent 422 errors even if body is missing.
+    """
+    # 0. Catch the absolute raw data
+    try:
+        raw_data = await request.json()
+    except:
+        raw_data = {}
+
+    # If Pydantic didn't receive a body, create a dummy one
+    if not mail:
+        mail = GmailIncoming()
+    
+    # 0.1 Deep Search for missing fields in the raw payload
+    # n8n Gmail Trigger often sends data in capitalized keys or nested in 'value'
+    extracted_sender = mail.sender
+    extracted_subject = mail.subject
+    extracted_body = mail.body
+
+    # If Pydantic failed to map them (parsed as defaults), try manual extraction from the full JSON
+    if extracted_sender == "Unknown":
+        raw_from = raw_data.get("From") or raw_data.get("from")
+        if isinstance(raw_from, dict):
+            # Handle n8n nested address structure
+            extracted_sender = raw_from.get("value", [{}])[0].get("address", "Unknown")
+        elif isinstance(raw_from, str):
+            extracted_sender = raw_from
+
+    if extracted_subject == "(No Subject)":
+        extracted_subject = raw_data.get("Subject") or raw_data.get("subject") or "(No Subject)"
+
+    if extracted_body == "(No Content)":
+        # Search for common text fields from Gmail nodes
+        extracted_body = raw_data.get("text") or raw_data.get("body") or raw_data.get("snippet") or "(No Content)"
+
+    # Logs the raw incoming for debugging
+    await log_event("GMAIL_RAW", {
+        "received": raw_data,
+        "parsed": {
+            "sender": extracted_sender,
+            "subject": extracted_subject,
+            "body": extracted_body
+        }
+    }, db, entity_id=extracted_sender or "unknown", source="gmail")
+
+    # 1. Title Filtering
+    # Strip whitespace and check for prefix
+    clean_subject = extracted_subject.strip().replace(" ", "").replace("　", "")
+    if not (clean_subject.startswith("[測試]") or clean_subject.startswith("【測試】")):
+        logger.info(f"Gmail skipped: Subject '{extracted_subject}' hasn't [測試] prefix.")
+        return {"status": "skipped", "reason": "subject_filter", "debug": extracted_subject}
+
+    # 2. Content Sanitization
+    safe_body = sanitize_email_content(extracted_body)
+    
+    await log_event("GMAIL_IN", {"sender": extracted_sender, "subject": extracted_subject, "content": safe_body}, db, entity_id=extracted_sender, source="gmail")
+
+    # 3. Upsert Lead
+    lead = db.query(Lead).filter(Lead.platform_id == extracted_sender).first()
+    if not lead:
+        lead = Lead(
+            platform_id=extracted_sender, 
+            name=extracted_sender.split('@')[0], 
+            source="gmail"
+        )
+        db.add(lead)
+    
+    lead.last_interaction = datetime.now()
+    db.commit()
+    return {"status": "success", "lead_id": lead.id}
+
+class GmailSendRequest(BaseModel):
+    recipient: str
+    subject: str
+    body: str
+
+@app.post("/api/gmail/send")
+async def send_gmail(mail: GmailSendRequest, db: Session = Depends(get_db)):
+    """Triggers n8n to send a Gmail."""
+    try:
+        payload = {
+            "to": mail.recipient,
+            "subject": mail.subject,
+            "message": mail.body
+        }
+        await log_event("GMAIL_OUT", payload, db, entity_id=mail.recipient, source="gmail")
+        # Trigger n8n Gmail Sender workflow (placeholder name 'GMAIL_SENDER')
+        result = await n8n.trigger_workflow("GMAIL_SENDER", payload)
+        return {"status": "success", "n8n_response": result}
+    except Exception as e:
+        logger.error(f"Gmail Send Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 # --- Lead Management (Scenario 5) ---
 
-@app.get("/leads")
+@app.get("/leads", response_model=List[LeadResponse])
 async def get_leads(db: Session = Depends(get_db)):
     """Fetch all leads for the dashboard."""
     return db.query(Lead).order_by(Lead.last_interaction.desc()).all()
+
+@app.patch("/leads/{lead_id}")
+async def update_lead(lead_id: int, update_data: Dict[str, Any], db: Session = Depends(get_db)):
+    """Update lead details (alias, status, etc.)"""
+    lead = db.query(Lead).filter(Lead.id == lead_id).first()
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    
+    for key, value in update_data.items():
+        if hasattr(lead, key):
+            setattr(lead, key, value)
+            
+    db.commit()
+    db.refresh(lead)
+    return lead
 
 @app.get("/tasks")
 async def get_tasks(db: Session = Depends(get_db)):
@@ -239,15 +394,16 @@ async def delete_list(list_id: int, db: Session = Depends(get_db)):
     db.commit()
     return {"status": "success"}
 
-@app.get("/leads/{lead_id}/logs")
+@app.get("/leads/{lead_id}/logs", response_model=List[LogResponse])
 async def get_lead_logs(lead_id: int, db: Session = Depends(get_db)):
     """Fetch full conversation history for a specific Lead."""
     lead = db.query(Lead).filter(Lead.id == lead_id).first()
     if not lead:
         raise HTTPException(status_code=404, detail="Lead not found")
     
-    # Filter by UID or Entity ID
-    return db.query(InteractionLog).filter(InteractionLog.entity_id == lead.line_uid).order_by(InteractionLog.timestamp.desc()).all()
+    # Filter by UID or Platform ID (Support both LINE and Gmail)
+    target_id = lead.line_uid or lead.platform_id
+    return db.query(InteractionLog).filter(InteractionLog.entity_id == target_id).order_by(InteractionLog.timestamp.desc()).all()
 
 @app.post("/leads/{lead_id}/lists/{list_id}")
 async def add_lead_to_list(lead_id: int, list_id: int, db: Session = Depends(get_db)):
@@ -545,4 +701,5 @@ async def init_onboarding_defaults():
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("BACKEND_PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    # Use reload=True so changes take effect immediately
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
